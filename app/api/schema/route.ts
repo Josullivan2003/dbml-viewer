@@ -92,11 +92,20 @@ export async function POST(request: NextRequest) {
       return null;
     }
 
-    // Transform _id fields from "unique" type to their referenced table name
+    // Transform _id and _ids fields from "unique" type to their referenced table name
     console.log("=== TRANSFORMING FOREIGN KEY TYPES ===");
     const beforeTransform = dbml;
     let transformCount = 0;
 
+    // Transform list fields: participant_ids unique -> participant_ids participant
+    dbml = dbml.replace(/(\w+_ids)\s+unique(?=\s*[\[\n]|$)/gm, (match, fieldName) => {
+      const entityName = fieldName.slice(0, -4); // Remove '_ids' suffix
+      transformCount++;
+      console.log(`[${transformCount}] Transforming ${fieldName}: unique -> ${entityName}`);
+      return `${fieldName} ${entityName}`;
+    });
+
+    // Transform foreign keys: user_id unique -> user_id user
     dbml = dbml.replace(/(\w+_id)\s+unique(?=\s*[\[\n]|$)/gm, (match, fieldName) => {
       const referencedTable = findReferencedTableForType(fieldName);
       if (referencedTable) {
@@ -108,7 +117,7 @@ export async function POST(request: NextRequest) {
     });
 
     console.log(`Total transformations: ${transformCount}`);
-    console.log("Sample transformed line:", dbml.split("\n").find(line => line.includes("_id") && !line.includes("unique"))?.slice(0, 100));
+    console.log("Sample transformed line:", dbml.split("\n").find(line => (line.includes("_id") || line.includes("_ids")) && !line.includes("unique"))?.slice(0, 100));
 
     const lines = dbml.split("\n");
 
