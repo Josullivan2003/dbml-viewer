@@ -309,6 +309,22 @@ export async function POST(request: NextRequest) {
     console.log("=== FIELD TYPES GENERATED ===");
     console.log(JSON.stringify(fieldTypes, null, 2));
 
+    // Extract table descriptions from DBML
+    const tableDescriptions: { [tableName: string]: string } = {};
+    const tableRegex = /Table\s+"([^"]+)"\s*\{([^}]+)\}/g;
+    let tableMatch;
+    while ((tableMatch = tableRegex.exec(generatedDbml)) !== null) {
+      const tableName = tableMatch[1];
+      const tableBody = tableMatch[2];
+      const tableNoteMatch = tableBody.match(/^\s*Note:\s*"([^"]+)"/m);
+      if (tableNoteMatch) {
+        tableDescriptions[tableName] = tableNoteMatch[1];
+      }
+    }
+
+    console.log("=== TABLE DESCRIPTIONS ===");
+    console.log(JSON.stringify(tableDescriptions, null, 2));
+
     // Convert DBML to use Bubble types for display in diagram
     const generatedDbmlWithBubbleTypes = convertDbmlToBubbleTypes(generatedDbml);
 
@@ -340,6 +356,7 @@ export async function POST(request: NextRequest) {
       generatedDbml,
       generatedDbmlWithBubbleTypes,
       fieldTypes,
+      tableDescriptions,
       featureTitle,
     });
   } catch (error) {
