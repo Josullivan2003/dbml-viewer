@@ -30,14 +30,15 @@ RULES:
 4. Add only essential new tables/fields for the feature
 5. Use snake_case names matching existing patterns - all lowercase with underscores
 6. Primary key fields (named "id") use "unique" type
-7. Foreign key naming: MUST be exactly {table_name}_id with NO prefixes or suffixes
-   - Examples: user_id, post_id, chat_conversation_id
-   - WRONG: sender_user_id, user_ID, userId, UserID (never use these variations)
-8. Foreign key field types MUST be the referenced table name: user_id uses type "user", post_id uses type "post"
-9. Relationships: > (many-to-one), < (one-to-many), - (one-to-one)
-10. Add table-level Note: "Simple one-sentence explanation"
-11. Add field-level Notes: "Simple one-line explanation"
-12. OPTIONAL - TABLEGROUP: At the END of the DBML, create a single TableGroup with color #FFBD94 containing:
+7. Foreign key fields MUST follow this pattern: {table_name}_id {referenced_table_name}
+   - Naming: MUST be exactly {table_name}_id with NO prefixes or suffixes
+   - Type: MUST be the referenced table name (NOT "unique")
+   - Examples: user_id user, post_id post, chat_conversation_id chat_conversation
+   - WRONG: sender_user_id unique, user_ID unique, userId unique (never use these)
+8. Relationships: > (many-to-one), < (one-to-many), - (one-to-one)
+9. Add table-level Note: "Simple one-sentence explanation"
+10. Add field-level Notes: "Simple one-line explanation"
+11. OPTIONAL - TABLEGROUP: At the END of the DBML, create a single TableGroup with color #FFBD94 containing:
     - ALL new tables created for this feature
     - ALL existing tables that are modified (have new fields added)
     - Do NOT include existing tables that are only referenced but not modified
@@ -64,13 +65,17 @@ Table "comments" {
   content text [Note: "Comment text"]
 }
 
-Table "conversations" {
-  Note: "Stores group conversations between multiple users."
-  id unique [primary key, Note: "Conversation ID"]
-  title text [Note: "Conversation name"]
-  user_ids unique [Note: "Conversation participants"]
-  created_at date [Note: "When created"]
+Table "payroll_run" {
+  Note: "Represents a weekly payroll processing batch."
+  id unique [primary key, Note: "Payroll run ID"]
+  week_start_date date [Note: "Start date of payroll"]
+  processed_by_user_id user [Note: "Admin who processed - foreign key uses table name"]
+  status text [Note: "Payroll status"]
 }
+
+IMPORTANT DISTINCTION:
+- Single foreign key: {table}_id {table} (e.g., processed_by_user_id user)
+- List field (multiple references): {table}_ids unique (e.g., user_ids unique for list of users)
 
 TABLEGROUP EXAMPLE (with proper syntax):
 TableGroup "Messaging System" [color: #FFBD94] {
