@@ -132,7 +132,11 @@ export async function POST(request: NextRequest) {
 
     // Add generated refs to DBML if any
     if (generatedRefs.length > 0) {
+      console.log(`Generated ${generatedRefs.length} relationship references`);
+      console.log("Generated Refs:", generatedRefs.slice(0, 5)); // Log first 5 for debugging
       dbml = dbml.trimRight() + "\n\n" + generatedRefs.join("\n");
+    } else {
+      console.log("No relationship references generated");
     }
 
     return NextResponse.json({ dbml });
