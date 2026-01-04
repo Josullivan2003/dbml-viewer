@@ -8,6 +8,12 @@ BUBBLE TYPES ONLY: text, number, Y_N (yes/no), date (datetime), unique (primary 
 Examples: id (unique), user_id (user), post_id (post), chat_conversation_id (chat_conversation)
 - DO NOT use: int, decimal, boolean, datetime, timestamp, varchar
 
+BUBBLE LIST FIELDS (for schema descriptions only, NOT in DBML):
+Bubble supports "list of [table_name]" fields to store multiple references (e.g., a conversation with a list of users).
+- Use only when the collection will not exceed 100 items
+- Do NOT add list fields to the DBML structure itself
+- Mention in field notes if a field could alternatively be a list (e.g., "[field_name]: 'List of users in conversation (limit 100)'")
+
 RULES:
 1. Return ONLY valid DBML - no markdown/code blocks
 2. Include ALL existing tables exactly as-is
