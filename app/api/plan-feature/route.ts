@@ -4,74 +4,25 @@ import Anthropic from "@anthropic-ai/sdk";
 function buildSystemPrompt(currentDbml: string): string {
   return `Design database schema extensions for Bubble.io using DBML. Extend the existing schema with new tables/fields for the requested feature.
 
-BUBBLE TYPES ONLY: text, number, Y_N (yes/no), date (datetime), unique (primary keys), table names (foreign keys)
-Examples: id (unique), user_id (user), post_id (post), chat_conversation_id (chat_conversation)
-- DO NOT use: int, decimal, boolean, datetime, timestamp, varchar
-
-BUBBLE LIST FIELDS:
-For storing multiple references to the same entity, use list fields with naming: {entity}_ids (e.g., user_ids for multiple users)
-- Use lists INSTEAD of creating multiple columns like participant1_id, participant2_id
-- Only use when the list won't exceed 100 items
-- In DBML, use "unique" type for list fields
-- Example: user_ids field with type "unique" stores multiple user references
+TYPES: text, number, Y_N, date, unique (primary keys), table_name (foreign keys)
 
 RULES:
-1. Return ONLY valid DBML - no markdown code blocks
-2. Ensure ALL braces are balanced: each Table { must have a closing }
-3. Include ALL existing tables exactly as-is
-4. Add only essential new tables/fields for the feature
-5. Use snake_case names matching existing patterns - all lowercase with underscores
-6. Primary key fields (named "id") use "unique" type
-7. Foreign key fields: name as {table_name}_id, type as the referenced table name
-   - Examples: user_id user, post_id post, comment_id comment
-8. Relationships: > (many-to-one), < (one-to-many), - (one-to-one)
-9. Add table-level Note: "Simple one-sentence explanation"
-10. Add field-level Notes: "Simple one-line explanation"
-11. OPTIONAL - TABLEGROUP: At the END of the DBML, create a single TableGroup with color #FFBD94 containing new and modified tables
-    - Syntax: TableGroup "feature_name" [color: #FFBD94] { tables... Note: '''description''' }
+1. Return ONLY valid DBML - no markdown code blocks, balanced braces
+2. Include ALL existing tables unchanged
+3. Primary key: id unique
+4. Foreign key: field_name table_name (e.g., user_id user, post_id post)
+5. List fields: entity_ids unique (for multiple references, e.g., user_ids unique)
+6. Use snake_case for all names
+7. Add Notes to tables and fields
 
-EXAMPLES:
+EXAMPLE:
 Table "messages" {
   Note: "Stores messages between users."
-  id unique [primary key, Note: "Message ID"]
-  user_id user [Note: "Sender"]
-  content text [Note: "Message text"]
-  created_at date [Note: "When sent"]
+  id unique
+  user_id user
+  content text
+  created_at date
 }
-
-Table "comments" {
-  Note: "Stores comments on posts."
-  id unique [primary key, Note: "Comment ID"]
-  post_id post [Note: "Parent post"]
-  user_id user [Note: "Comment author"]
-  content text [Note: "Comment text"]
-}
-
-Table "payroll_run" {
-  Note: "Represents a weekly payroll processing batch."
-  id unique [primary key, Note: "Payroll run ID"]
-  week_start_date date [Note: "Start date of payroll"]
-  processed_by_user_id user [Note: "Admin who processed - foreign key uses table name"]
-  status text [Note: "Payroll status"]
-}
-
-IMPORTANT: For display purposes, both foreign keys and list fields show the referenced table name as their type:
-- user_id field displays as type: user
-- user_ids field displays as type: user
-
-TABLEGROUP EXAMPLE (with proper syntax):
-TableGroup "Messaging System" [color: #FFBD94] {
-  conversations
-  messages
-
-  Note: '''
-  This group manages the messaging functionality.
-  - conversations: Stores group conversations between multiple users.
-  - messages: Stores messages within conversations.
-  '''
-}
-
-Start response immediately with Table definitions.
 
 Current Schema:
 ${currentDbml}`;
