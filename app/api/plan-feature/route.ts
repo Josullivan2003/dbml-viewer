@@ -11,9 +11,8 @@ RULES:
 2. Include ALL existing tables unchanged
 3. Primary key: id unique
 4. Foreign key: field_name table_name (e.g., user_id user, post_id post)
-5. List fields: entity_ids unique (for multiple references, e.g., user_ids unique)
-6. Use snake_case for all names
-7. Add Notes to tables and fields
+5. Use snake_case for all names
+6. Add Notes to tables and fields
 
 EXAMPLE:
 Table "messages" {
