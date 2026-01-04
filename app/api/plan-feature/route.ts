@@ -4,24 +4,92 @@ import Anthropic from "@anthropic-ai/sdk";
 function buildSystemPrompt(currentDbml: string): string {
   return `Design database schema extensions for Bubble.io using DBML. Extend the existing schema with new tables/fields for the requested feature.
 
-TYPES: text, number, Y_N, date, unique (primary keys), table_name (foreign keys)
+BUBBLE TYPES ONLY: text, number, Y_N (yes/no), date (datetime), unique (primary keys), table names (foreign keys)
+Examples: id (unique), user_id (user), post_id (post), chat_conversation_id (chat_conversation)
+- DO NOT use: int, decimal, boolean, datetime, timestamp, varchar
+
+BUBBLE LIST FIELDS (for schema descriptions only, NOT in DBML):
+Bubble supports "list of [table_name]" fields to store multiple references. Use lists INSTEAD of creating multiple columns of the same type.
+- CRITICAL: If you would otherwise create participant1_id, participant2_id, or user1_id, user2_id etc., use a single "list of users" field instead
+- Use only when the collection will not exceed 100 items
+- Do NOT add list fields to the DBML structure itself - keep the DBML simple
+- LIST FIELD NAMING: MUST use {entity}_ids format (plural entity name + _ids) to make the entity type clear
+  - Examples: user_ids, post_ids, comment_ids, participant_ids
+  - WRONG: users, participants, list, data, participant_user_ids (no double entity names)
+  - This naming convention allows the frontend to automatically detect and display as "list of [entity]"
+- In the DBML, list fields use "unique" type, e.g., "user_ids: unique [Note: 'Conversation participants']"
+  - Field name {entity}_ids indicates it's a list and what entity it contains
+  - Type "unique" marks it as a list field in DBML
+  - Note should describe the purpose/context, not repeat the entity name
+- Example: A conversation with multiple participants should have a "user_ids" field noted as "Conversation participants" - NOT participant1_id, participant2_id
 
 RULES:
-1. Return ONLY valid DBML - no markdown code blocks, balanced braces
-2. Include ALL existing tables unchanged
-3. Primary key: id unique
-4. Foreign key: field_name table_name (e.g., user_id user, post_id post)
-5. Use snake_case for all names
-6. Add Notes to tables and fields
+1. Return ONLY valid DBML - no markdown code blocks
+2. Ensure ALL braces are balanced: each Table { must have a closing }
+3. Include ALL existing tables exactly as-is
+4. Add only essential new tables/fields for the feature
+5. Use snake_case names matching existing patterns - all lowercase with underscores
+6. Primary key fields (named "id") use "unique" type
+7. Foreign key fields MUST follow this pattern: {table_name}_id {referenced_table_name}
+   - Naming: MUST be exactly {table_name}_id with NO prefixes or suffixes
+   - Type: MUST be the referenced table name (NOT "unique")
+   - Examples: user_id user, post_id post, chat_conversation_id chat_conversation
+   - WRONG: sender_user_id unique, user_ID unique, userId unique (never use these)
+8. Relationships: > (many-to-one), < (one-to-many), - (one-to-one)
+9. Add table-level Note: "Simple one-sentence explanation"
+10. Add field-level Notes: "Simple one-line explanation"
+11. OPTIONAL - TABLEGROUP: At the END of the DBML, create a single TableGroup with color #FFBD94 containing:
+    - ALL new tables created for this feature
+    - ALL existing tables that are modified (have new fields added)
+    - Do NOT include existing tables that are only referenced but not modified
+    - CRITICAL SYNTAX: TableGroup "feature_name" [color: #FFBD94] { tables... Note: '''description''' }
+    - TableGroup name MUST be in quotes
+    - Color MUST use syntax: [color: #FFBD94]
+    - Include a Note section with triple quotes for multi-line description
+    - Only add TableGroup if there are new or modified tables
 
-EXAMPLE:
+EXAMPLES:
 Table "messages" {
   Note: "Stores messages between users."
-  id unique
-  user_id user
-  content text
-  created_at date
+  id unique [primary key, Note: "Message ID"]
+  user_id user [Note: "Sender"]
+  content text [Note: "Message text"]
+  created_at date [Note: "When sent"]
 }
+
+Table "comments" {
+  Note: "Stores comments on posts."
+  id unique [primary key, Note: "Comment ID"]
+  post_id post [Note: "Parent post"]
+  user_id user [Note: "Comment author"]
+  content text [Note: "Comment text"]
+}
+
+Table "payroll_run" {
+  Note: "Represents a weekly payroll processing batch."
+  id unique [primary key, Note: "Payroll run ID"]
+  week_start_date date [Note: "Start date of payroll"]
+  processed_by_user_id user [Note: "Admin who processed - foreign key uses table name"]
+  status text [Note: "Payroll status"]
+}
+
+IMPORTANT DISTINCTION:
+- Single foreign key: {table}_id {table} (e.g., processed_by_user_id user)
+- List field (multiple references): {table}_ids unique (e.g., user_ids unique for list of users)
+
+TABLEGROUP EXAMPLE (with proper syntax):
+TableGroup "Messaging System" [color: #FFBD94] {
+  conversations
+  messages
+
+  Note: '''
+  This group manages the messaging functionality.
+  - conversations: Stores group conversations between multiple users.
+  - messages: Stores messages within conversations.
+  '''
+}
+
+Start response immediately with Table definitions.
 
 Current Schema:
 ${currentDbml}`;
@@ -128,8 +196,11 @@ function extractFieldTypesFromDbml(dbml: string): { [tableName: string]: { [fiel
       if (fieldName === 'id') {
         bubbleType = 'unique';
       } else if (fieldName.endsWith('_ids')) {
-        // Extract table name from field name (user_ids -> user)
-        bubbleType = fieldName.slice(0, -4); // Remove '_ids' suffix
+        // Extract table name from field name (user_ids -> users (list))
+        const entityName = fieldName.slice(0, -4); // Remove '_ids' suffix
+        // Simple pluralization: add 's' if not already ending in 's'
+        const pluralEntity = entityName.endsWith('s') ? entityName : `${entityName}s`;
+        bubbleType = `${pluralEntity} (list)`;
       } else if (fieldName.endsWith('_id')) {
         // Extract table name from field name (user_id -> user)
         bubbleType = fieldName.slice(0, -3);
@@ -245,11 +316,6 @@ export async function POST(request: NextRequest) {
     if (generatedDbml.startsWith('```')) {
       generatedDbml = generatedDbml.replace(/^```(?:dbml)?\n?/, '').replace(/\n?```$/, '');
     }
-
-    console.log("=== GENERATED DBML ===");
-    console.log("Length:", generatedDbml.length);
-    console.log("First 500 chars:", generatedDbml.substring(0, 500));
-    console.log("Contains Table:", generatedDbml.includes("Table"));
 
     // Validate the generated DBML
     const validation = validateDbml(generatedDbml);
