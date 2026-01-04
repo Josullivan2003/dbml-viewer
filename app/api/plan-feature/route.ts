@@ -13,7 +13,11 @@ Bubble supports "list of [table_name]" fields to store multiple references. Use 
 - CRITICAL: If you would otherwise create participant1_id, participant2_id, or user1_id, user2_id etc., use a single "list of users" field instead
 - Use only when the collection will not exceed 100 items
 - Do NOT add list fields to the DBML structure itself - keep the DBML simple
-- In the DBML, use a single field with a descriptive note mentioning it can be a list, e.g., "users: text [Note: 'List of user IDs (limit 100)']" OR document it in table notes
+- LIST FIELD NAMING: Use the plural form of the entity name or {entity}_ids format to make the entity type immediately clear
+  - Examples: users, participants, posts, comments, user_ids, post_ids, comment_ids
+  - WRONG: participants (ambiguous), list (no entity info), data (no context)
+  - DO use: users (clearly a list of users), post_ids (clearly user references to posts)
+- In the DBML, use a single field with a descriptive note, e.g., "users: text [Note: 'List of user IDs (limit 100)']"
 - Example: A conversation with multiple participants should have a "users" field noted as "List of participants (limit 100)" - NOT participant1_id, participant2_id
 
 RULES:
