@@ -20,6 +20,10 @@ export async function POST(request: NextRequest) {
     }
 
     // Create diagram
+    console.log("=== CREATING DBDIAGRAM ===");
+    console.log("DBML length:", dbml.length);
+    console.log("First 200 chars:", dbml.substring(0, 200));
+    
     const diagramResponse = await fetch("https://api.dbdiagram.io/v1/diagrams", {
       method: "POST",
       headers: {
@@ -34,8 +38,10 @@ export async function POST(request: NextRequest) {
 
     if (!diagramResponse.ok) {
       const errorData = await diagramResponse.text();
+      console.error("dbDiagram API error - status:", diagramResponse.status);
+      console.error("dbDiagram API error - response:", errorData);
       throw new Error(
-        `dbDiagram API error: ${diagramResponse.status} ${errorData}`
+        `dbDiagram API error: ${diagramResponse.status} ${errorData.substring(0, 500)}`
       );
     }
 
