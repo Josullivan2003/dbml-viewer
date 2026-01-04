@@ -246,6 +246,11 @@ export async function POST(request: NextRequest) {
       generatedDbml = generatedDbml.replace(/^```(?:dbml)?\n?/, '').replace(/\n?```$/, '');
     }
 
+    console.log("=== GENERATED DBML ===");
+    console.log("Length:", generatedDbml.length);
+    console.log("First 500 chars:", generatedDbml.substring(0, 500));
+    console.log("Contains Table:", generatedDbml.includes("Table"));
+
     // Validate the generated DBML
     const validation = validateDbml(generatedDbml);
     if (!validation.valid) {
