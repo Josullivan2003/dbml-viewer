@@ -24,19 +24,20 @@ Bubble supports "list of [table_name]" fields to store multiple references. Use 
 - Example: A conversation with multiple participants should have a "user_ids" field noted as "Conversation participants" - NOT participant1_id, participant2_id
 
 RULES:
-1. Return ONLY valid DBML - no markdown/code blocks
-2. Include ALL existing tables exactly as-is
-3. Add only essential new tables/fields for the feature
-4. Use snake_case names matching existing patterns - all lowercase with underscores
-5. Primary key fields (named "id") use "unique" type
-6. Foreign key naming: MUST be exactly {table_name}_id with NO prefixes or suffixes
+1. Return ONLY valid DBML - no markdown code blocks (no ``` or ```dbml)
+2. Ensure ALL braces are balanced: each Table { must have a closing }
+3. Include ALL existing tables exactly as-is
+4. Add only essential new tables/fields for the feature
+5. Use snake_case names matching existing patterns - all lowercase with underscores
+6. Primary key fields (named "id") use "unique" type
+7. Foreign key naming: MUST be exactly {table_name}_id with NO prefixes or suffixes
    - Examples: user_id, post_id, chat_conversation_id
    - WRONG: sender_user_id, user_ID, userId, UserID (never use these variations)
-7. Foreign key field types MUST be the referenced table name: user_id uses type "user", post_id uses type "post"
-8. Relationships: > (many-to-one), < (one-to-many), - (one-to-one)
-9. Add table-level Note: "Simple one-sentence explanation"
-10. Add field-level Notes: "Simple one-line explanation"
-11. OPTIONAL - TABLEGROUP: At the END of the DBML, create a single TableGroup with color #FFBD94 containing:
+8. Foreign key field types MUST be the referenced table name: user_id uses type "user", post_id uses type "post"
+9. Relationships: > (many-to-one), < (one-to-many), - (one-to-one)
+10. Add table-level Note: "Simple one-sentence explanation"
+11. Add field-level Notes: "Simple one-line explanation"
+12. OPTIONAL - TABLEGROUP: At the END of the DBML, create a single TableGroup with color #FFBD94 containing:
     - ALL new tables created for this feature
     - ALL existing tables that are modified (have new fields added)
     - Do NOT include existing tables that are only referenced but not modified
