@@ -41,7 +41,8 @@ RULES:
     - ALL new tables created for this feature
     - ALL existing tables that are modified (have new fields added)
     - Do NOT include existing tables that are only referenced but not modified
-    - Syntax: TableGroup feature_name #FFBD94 { table1 table2 table3 }
+    - CRITICAL: Syntax MUST be: TableGroup feature_name #FFBD94 { newline table1 newline table2 newline }
+    - Note: Must have opening brace { after color, each table on new line, closing brace }
     - Only add TableGroup if there are new or modified tables
 
 EXAMPLES:
@@ -69,11 +70,16 @@ Table "conversations" {
   created_at date [Note: "When created"]
 }
 
-TABLEGROUP EXAMPLE:
+TABLEGROUP EXAMPLE (with proper syntax):
 TableGroup messaging_feature #FFBD94 {
   conversations
   messages
 }
+
+WRONG EXAMPLES TO AVOID:
+- TableGroup messaging_feature #FFBD94 conversations messages (missing braces)
+- TableGroup messaging_feature #FFBD94{ (missing space before brace)
+- TableGroup messaging_feature {conversations messages} (wrong color position)
 
 Start response immediately with Table definitions.
 
