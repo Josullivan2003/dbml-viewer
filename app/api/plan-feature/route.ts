@@ -41,8 +41,10 @@ RULES:
     - ALL new tables created for this feature
     - ALL existing tables that are modified (have new fields added)
     - Do NOT include existing tables that are only referenced but not modified
-    - CRITICAL: Syntax MUST be: TableGroup feature_name #FFBD94 { newline table1 newline table2 newline }
-    - Note: Must have opening brace { after color, each table on new line, closing brace }
+    - CRITICAL SYNTAX: TableGroup "feature_name" [color: #FFBD94] { tables... Note: '''description''' }
+    - TableGroup name MUST be in quotes
+    - Color MUST use syntax: [color: #FFBD94]
+    - Include a Note section with triple quotes for multi-line description
     - Only add TableGroup if there are new or modified tables
 
 EXAMPLES:
@@ -71,15 +73,16 @@ Table "conversations" {
 }
 
 TABLEGROUP EXAMPLE (with proper syntax):
-TableGroup messaging_feature #FFBD94 {
+TableGroup "Messaging System" [color: #FFBD94] {
   conversations
   messages
-}
 
-WRONG EXAMPLES TO AVOID:
-- TableGroup messaging_feature #FFBD94 conversations messages (missing braces)
-- TableGroup messaging_feature #FFBD94{ (missing space before brace)
-- TableGroup messaging_feature {conversations messages} (wrong color position)
+  Note: '''
+  This group manages the messaging functionality.
+  - conversations: Stores group conversations between multiple users.
+  - messages: Stores messages within conversations.
+  '''
+}
 
 Start response immediately with Table definitions.
 
