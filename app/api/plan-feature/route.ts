@@ -13,12 +13,13 @@ Bubble supports "list of [table_name]" fields to store multiple references. Use 
 - CRITICAL: If you would otherwise create participant1_id, participant2_id, or user1_id, user2_id etc., use a single "list of users" field instead
 - Use only when the collection will not exceed 100 items
 - Do NOT add list fields to the DBML structure itself - keep the DBML simple
-- LIST FIELD NAMING: Use the plural form of the entity name or {entity}_ids format to make the entity type immediately clear
-  - Examples: users, participants, posts, comments, user_ids, post_ids, comment_ids
-  - WRONG: participants (ambiguous), list (no entity info), data (no context)
-  - DO use: users (clearly a list of users), post_ids (clearly user references to posts)
-- In the DBML, use a single field with a descriptive note, e.g., "users: text [Note: 'List of user IDs (limit 100)']"
-- Example: A conversation with multiple participants should have a "users" field noted as "List of participants (limit 100)" - NOT participant1_id, participant2_id
+- LIST FIELD NAMING: MUST use {entity}_ids format (plural entity name + _ids) to make the entity type clear
+  - Examples: user_ids, post_ids, comment_ids, participant_ids
+  - WRONG: users, participants, list, data, participant_user_ids (no double entity names)
+  - This naming convention allows the frontend to automatically detect and display as "list of [entity]"
+- In the DBML, use a single field with a descriptive note, e.g., "user_ids: text [Note: 'Participants in conversation']"
+  - Note should describe what the list contains, not repeat the entity name (that's clear from field name)
+- Example: A conversation with multiple participants should have a "user_ids" field noted as "Conversation participants" - NOT participant1_id, participant2_id
 
 RULES:
 1. Return ONLY valid DBML - no markdown/code blocks
@@ -56,7 +57,7 @@ Table "conversations" {
   Note: "Stores group conversations between multiple users."
   id unique [primary key, Note: "Conversation ID"]
   title text [Note: "Conversation name"]
-  users text [Note: "List of participant user IDs (limit 100)"]
+  user_ids text [Note: "Conversation participants"]
   created_at date [Note: "When created"]
 }
 
@@ -166,6 +167,10 @@ function extractFieldTypesFromDbml(dbml: string): { [tableName: string]: { [fiel
       // For schema changes display: convert id fields to table name reference
       if (fieldName === 'id') {
         bubbleType = 'unique';
+      } else if (fieldName.endsWith('_ids')) {
+        // Extract table name from field name (user_ids -> list of users)
+        const entityName = fieldName.slice(0, -4); // Remove '_ids'
+        bubbleType = `list of ${entityName}`;
       } else if (fieldName.endsWith('_id')) {
         // Extract table name from field name (user_id -> user)
         bubbleType = fieldName.slice(0, -3);
