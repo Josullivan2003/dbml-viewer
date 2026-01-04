@@ -14,9 +14,13 @@ export async function POST(request: NextRequest) {
     const encodedUrl = encodeURIComponent(url);
     const apiUrl = `https://bubble-schema-api.onrender.com/api/schema/${encodedUrl}?format=dbml`;
 
+    console.log("=== SCHEMA API REQUEST ===");
+    console.log("API URL:", apiUrl);
+
     const response = await fetch(apiUrl);
 
     if (!response.ok) {
+      console.log("Render API error - status:", response.status);
       return NextResponse.json(
         { error: "The URL you entered isn't a Bubble app. Please enter a URL of a Bubble app." },
         { status: 400 }
@@ -25,7 +29,13 @@ export async function POST(request: NextRequest) {
 
     let dbml = await response.text();
 
+    console.log("=== DBML FROM RENDER ===");
+    console.log("DBML length:", dbml.length);
+    console.log("DBML ends with:", dbml.slice(-200)); // Last 200 chars
+    console.log("Contains existing Ref:", dbml.includes("Ref:"));
+
     if (!dbml || dbml.trim().length === 0) {
+      console.log("Empty DBML returned");
       return NextResponse.json(
         { error: "The URL you entered isn't a Bubble app. Please enter a URL of a Bubble app." },
         { status: 400 }
@@ -135,6 +145,8 @@ export async function POST(request: NextRequest) {
       console.log(`Generated ${generatedRefs.length} relationship references`);
       console.log("Generated Refs:", generatedRefs.slice(0, 5)); // Log first 5 for debugging
       dbml = dbml.trimRight() + "\n\n" + generatedRefs.join("\n");
+      console.log("=== FINAL DBML ===");
+      console.log("Final DBML ends with:", dbml.slice(-500)); // Last 500 chars to see refs
     } else {
       console.log("No relationship references generated");
     }
