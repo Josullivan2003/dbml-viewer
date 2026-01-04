@@ -76,6 +76,38 @@ export async function POST(request: NextRequest) {
       }
     });
 
+    // Helper function to find referenced table from field name
+    function findReferencedTable(fieldName: string): string | null {
+      if (!fieldName.endsWith("_id") || fieldName === "id") return null;
+
+      const fieldNameWithoutId = fieldName.slice(0, -3);
+
+      // First, try exact match (e.g., session_id -> sessions, user_id -> user)
+      if (definedTables.has(fieldNameWithoutId)) {
+        return fieldNameWithoutId;
+      }
+
+      // Try with 's' suffix (e.g., session_id -> sessions)
+      if (definedTables.has(fieldNameWithoutId + "s")) {
+        return fieldNameWithoutId + "s";
+      }
+
+      // Try removing last word and matching (e.g., creator_user_id -> user)
+      const parts = fieldNameWithoutId.split("_");
+      for (let i = parts.length - 1; i >= 0; i--) {
+        const potentialTable = parts.slice(i).join("_");
+        if (definedTables.has(potentialTable)) {
+          return potentialTable;
+        }
+        // Try with 's' suffix
+        if (definedTables.has(potentialTable + "s")) {
+          return potentialTable + "s";
+        }
+      }
+
+      return null;
+    }
+
     for (const match of tableMatches2) {
       const tableName = match[1];
       const tableBody = match[2];
@@ -86,14 +118,12 @@ export async function POST(request: NextRequest) {
         const fieldMatch = fieldLine.match(/(\w+)\s+\w+/);
         if (fieldMatch) {
           const fieldName = fieldMatch[1];
-          if (fieldName.endsWith("_id") && fieldName !== "id") {
-            // Extract the referenced table name by removing _id
-            const referencedTable = fieldName.slice(0, -3);
-            if (definedTables.has(referencedTable)) {
-              const refKey = `${tableName}.${fieldName}-${referencedTable}.id`;
-              if (!existingRefs.has(refKey)) {
-                generatedRefs.push(`Ref: ${tableName}.${fieldName} > ${referencedTable}.id`);
-              }
+          const referencedTable = findReferencedTable(fieldName);
+
+          if (referencedTable) {
+            const refKey = `${tableName}.${fieldName}-${referencedTable}.id`;
+            if (!existingRefs.has(refKey)) {
+              generatedRefs.push(`Ref: ${tableName}.${fieldName} > ${referencedTable}.id`);
             }
           }
         }
