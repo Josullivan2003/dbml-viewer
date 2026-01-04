@@ -282,6 +282,7 @@ interface FetchState {
   featurePlanning?: {
     status: "idle" | "planning" | "generating" | "success" | "error";
     description?: string;
+    featureTitle?: string;
     generatedDbml?: string;
     proposedEmbedUrl?: string;
     error?: string;
@@ -1030,14 +1031,14 @@ export default function Home() {
                         </div>
 
                         {/* Changes Summary */}
-                        {fetchState.featurePlanning.changes && (Object.keys(fetchState.featurePlanning.changes.newTables).length > 0 || Object.keys(fetchState.featurePlanning.changes.newFields).length > 0) && (
+                        {fetchState.featurePlanning!.changes && (Object.keys(fetchState.featurePlanning!.changes.newTables).length > 0 || Object.keys(fetchState.featurePlanning!.changes.newFields).length > 0) && (
                           <div className="bg-orange-50 border border-orange-200 rounded-lg p-2.5 space-y-2">
                             <p className="text-xs font-bold text-orange-900 px-1">Schema Changes</p>
 
-                            {Object.keys(fetchState.featurePlanning.changes.newTables).length > 0 && (
+                            {Object.keys(fetchState.featurePlanning!.changes!.newTables).length > 0 && (
                               <div className="space-y-1">
                                 <p className="text-xs font-semibold text-orange-800 px-1">New Tables</p>
-                                {Object.entries(fetchState.featurePlanning.changes.newTables).map(([tableName, fields]) => (
+                                {Object.entries(fetchState.featurePlanning!.changes!.newTables).map(([tableName, fields]) => (
                                   <div key={tableName} className="bg-white border border-orange-200 rounded overflow-hidden">
                                     <button
                                       onClick={() => toggleSchemaTable(tableName)}
@@ -1048,8 +1049,8 @@ export default function Home() {
                                       </span>
                                       <div className="flex-1">
                                         <p className="text-xs font-bold text-orange-900">{tableName}</p>
-                                        {fetchState.featurePlanning.changes.tableDescriptions?.[tableName] && (
-                                          <p className="text-xs text-orange-700 italic mt-0.5 leading-tight">{fetchState.featurePlanning.changes.tableDescriptions[tableName]}</p>
+                                        {fetchState.featurePlanning!.changes!.tableDescriptions?.[tableName] && (
+                                          <p className="text-xs text-orange-700 italic mt-0.5 leading-tight">{fetchState.featurePlanning!.changes!.tableDescriptions[tableName]}</p>
                                         )}
                                       </div>
                                     </button>
@@ -1078,10 +1079,10 @@ export default function Home() {
                               </div>
                             )}
 
-                            {Object.keys(fetchState.featurePlanning.changes.newFields).length > 0 && (
+                            {Object.keys(fetchState.featurePlanning!.changes!.newFields).length > 0 && (
                               <div className="space-y-1 pt-1">
                                 <p className="text-xs font-semibold text-orange-800 px-1">Modified Tables</p>
-                                {Object.entries(fetchState.featurePlanning.changes.newFields).map(([tableName, fields]) => (
+                                {Object.entries(fetchState.featurePlanning!.changes!.newFields).map(([tableName, fields]) => (
                                   <div key={tableName} className="bg-white border border-orange-200 rounded overflow-hidden">
                                     <button
                                       onClick={() => toggleSchemaTable(tableName)}
@@ -1092,8 +1093,8 @@ export default function Home() {
                                       </span>
                                       <div className="flex-1">
                                         <p className="text-xs font-bold text-orange-900">{tableName}</p>
-                                        {fetchState.featurePlanning.changes.tableDescriptions?.[tableName] && (
-                                          <p className="text-xs text-orange-700 italic mt-0.5 leading-tight">{fetchState.featurePlanning.changes.tableDescriptions[tableName]}</p>
+                                        {fetchState.featurePlanning!.changes!.tableDescriptions?.[tableName] && (
+                                          <p className="text-xs text-orange-700 italic mt-0.5 leading-tight">{fetchState.featurePlanning!.changes!.tableDescriptions[tableName]}</p>
                                         )}
                                       </div>
                                     </button>
