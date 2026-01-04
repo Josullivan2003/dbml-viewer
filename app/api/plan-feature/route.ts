@@ -12,10 +12,12 @@ RULES:
 1. Return ONLY valid DBML - no markdown/code blocks
 2. Include ALL existing tables exactly as-is
 3. Add only essential new tables/fields for the feature
-4. Use snake_case names matching existing patterns
+4. Use snake_case names matching existing patterns - all lowercase with underscores
 5. Primary key fields (named "id") use "unique" type
-6. Foreign key field types MUST be the referenced table name: user_id uses type "user", post_id uses type "post", chat_conversation_id uses type "chat_conversation"
-7. Foreign key names MUST match referenced table: chat_conversation table → chat_conversation_id field
+6. Foreign key naming: MUST be exactly {table_name}_id with NO prefixes or suffixes
+   - Examples: user_id, post_id, chat_conversation_id
+   - WRONG: sender_user_id, user_ID, userId, UserID (never use these variations)
+7. Foreign key field types MUST be the referenced table name: user_id uses type "user", post_id uses type "post"
 8. Relationships: > (many-to-one), < (one-to-many), - (one-to-one)
 9. Add table-level Note: "Simple one-sentence explanation"
 10. Add field-level Notes: "Simple one-line explanation"
