@@ -72,6 +72,7 @@ Table "payroll_run" {
 
 IMPORTANT DISTINCTION:
 - Single foreign key: {table}_id {table} (e.g., processed_by_user_id user)
+- List field (multiple references): {table}_ids unique (e.g., user_ids unique for list of users)
 
 TABLEGROUP EXAMPLE (with proper syntax):
 TableGroup "Messaging System" [color: #FFBD94] {
