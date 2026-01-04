@@ -93,14 +93,22 @@ export async function POST(request: NextRequest) {
     }
 
     // Transform _id fields from "unique" type to their referenced table name
-    dbml = dbml.replace(/(\w+_id)\s+unique(?=\s*\[|\s*$)/gm, (match, fieldName) => {
+    console.log("=== TRANSFORMING FOREIGN KEY TYPES ===");
+    const beforeTransform = dbml;
+    let transformCount = 0;
+
+    dbml = dbml.replace(/(\w+_id)\s+unique(?=\s*[\[\n]|$)/gm, (match, fieldName) => {
       const referencedTable = findReferencedTableForType(fieldName);
       if (referencedTable) {
-        console.log(`Transforming ${fieldName}: unique -> ${referencedTable}`);
+        transformCount++;
+        console.log(`[${transformCount}] Transforming ${fieldName}: unique -> ${referencedTable}`);
         return `${fieldName} ${referencedTable}`;
       }
-      return match; // Keep as-is if we can't find the referenced table
+      return match;
     });
+
+    console.log(`Total transformations: ${transformCount}`);
+    console.log("Sample transformed line:", dbml.split("\n").find(line => line.includes("_id") && !line.includes("unique"))?.slice(0, 100));
 
     const lines = dbml.split("\n");
 
