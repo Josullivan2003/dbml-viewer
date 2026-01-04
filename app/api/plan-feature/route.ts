@@ -9,10 +9,12 @@ Examples: id (unique), user_id (user), post_id (post), chat_conversation_id (cha
 - DO NOT use: int, decimal, boolean, datetime, timestamp, varchar
 
 BUBBLE LIST FIELDS (for schema descriptions only, NOT in DBML):
-Bubble supports "list of [table_name]" fields to store multiple references (e.g., a conversation with a list of users).
+Bubble supports "list of [table_name]" fields to store multiple references. Use lists INSTEAD of creating multiple columns of the same type.
+- CRITICAL: If you would otherwise create participant1_id, participant2_id, or user1_id, user2_id etc., use a single "list of users" field instead
 - Use only when the collection will not exceed 100 items
-- Do NOT add list fields to the DBML structure itself
-- Mention in field notes if a field could alternatively be a list (e.g., "[field_name]: 'List of users in conversation (limit 100)'")
+- Do NOT add list fields to the DBML structure itself - keep the DBML simple
+- In the DBML, use a single field with a descriptive note mentioning it can be a list, e.g., "users: text [Note: 'List of user IDs (limit 100)']" OR document it in table notes
+- Example: A conversation with multiple participants should have a "users" field noted as "List of participants (limit 100)" - NOT participant1_id, participant2_id
 
 RULES:
 1. Return ONLY valid DBML - no markdown/code blocks
@@ -44,6 +46,14 @@ Table "comments" {
   post_id post [Note: "Parent post"]
   user_id user [Note: "Comment author"]
   content text [Note: "Comment text"]
+}
+
+Table "conversations" {
+  Note: "Stores group conversations between multiple users."
+  id unique [primary key, Note: "Conversation ID"]
+  title text [Note: "Conversation name"]
+  users text [Note: "List of participant user IDs (limit 100)"]
+  created_at date [Note: "When created"]
 }
 
 Start response immediately with Table definitions.
