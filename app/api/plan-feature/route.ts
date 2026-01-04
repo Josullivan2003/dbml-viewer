@@ -24,7 +24,7 @@ Bubble supports "list of [table_name]" fields to store multiple references. Use 
 - Example: A conversation with multiple participants should have a "user_ids" field noted as "Conversation participants" - NOT participant1_id, participant2_id
 
 RULES:
-1. Return ONLY valid DBML - no markdown code blocks (no ``` or ```dbml)
+1. Return ONLY valid DBML - no markdown code blocks
 2. Ensure ALL braces are balanced: each Table { must have a closing }
 3. Include ALL existing tables exactly as-is
 4. Add only essential new tables/fields for the feature
