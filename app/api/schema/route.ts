@@ -60,6 +60,48 @@ export async function POST(request: NextRequest) {
     // Keep existing Ref statements - don't remove them even if table not found
     // (Render API may include valid refs we don't want to remove)
     console.log("Keeping existing Ref statements from Render API");
+
+    // Helper function to find referenced table from field name
+    function findReferencedTableForType(fieldName: string): string | null {
+      if (!fieldName.endsWith("_id") || fieldName === "id") return null;
+
+      const fieldNameWithoutId = fieldName.slice(0, -3);
+
+      // First, try exact match
+      if (definedTables.has(fieldNameWithoutId)) {
+        return fieldNameWithoutId;
+      }
+
+      // Try with 's' suffix for plurals
+      if (definedTables.has(fieldNameWithoutId + "s")) {
+        return fieldNameWithoutId + "s";
+      }
+
+      // Try splitting by '_' and matching parts from right to left
+      const parts = fieldNameWithoutId.split("_");
+      for (let i = parts.length - 1; i >= 0; i--) {
+        const potentialTable = parts.slice(i).join("_");
+        if (definedTables.has(potentialTable)) {
+          return potentialTable;
+        }
+        if (definedTables.has(potentialTable + "s")) {
+          return potentialTable + "s";
+        }
+      }
+
+      return null;
+    }
+
+    // Transform _id fields from "unique" type to their referenced table name
+    dbml = dbml.replace(/(\w+_id)\s+unique(?=\s*\[|\s*$)/gm, (match, fieldName) => {
+      const referencedTable = findReferencedTableForType(fieldName);
+      if (referencedTable) {
+        console.log(`Transforming ${fieldName}: unique -> ${referencedTable}`);
+        return `${fieldName} ${referencedTable}`;
+      }
+      return match; // Keep as-is if we can't find the referenced table
+    });
+
     const lines = dbml.split("\n");
 
     // Generate missing relationships from foreign key fields
@@ -76,38 +118,6 @@ export async function POST(request: NextRequest) {
       }
     });
 
-    // Helper function to find referenced table from field name
-    function findReferencedTable(fieldName: string): string | null {
-      if (!fieldName.endsWith("_id") || fieldName === "id") return null;
-
-      const fieldNameWithoutId = fieldName.slice(0, -3);
-
-      // First, try exact match (e.g., session_id -> sessions, user_id -> user)
-      if (definedTables.has(fieldNameWithoutId)) {
-        return fieldNameWithoutId;
-      }
-
-      // Try with 's' suffix (e.g., session_id -> sessions)
-      if (definedTables.has(fieldNameWithoutId + "s")) {
-        return fieldNameWithoutId + "s";
-      }
-
-      // Try removing last word and matching (e.g., creator_user_id -> user)
-      const parts = fieldNameWithoutId.split("_");
-      for (let i = parts.length - 1; i >= 0; i--) {
-        const potentialTable = parts.slice(i).join("_");
-        if (definedTables.has(potentialTable)) {
-          return potentialTable;
-        }
-        // Try with 's' suffix
-        if (definedTables.has(potentialTable + "s")) {
-          return potentialTable + "s";
-        }
-      }
-
-      return null;
-    }
-
     for (const match of tableMatches2) {
       const tableName = match[1];
       const tableBody = match[2];
@@ -118,7 +128,7 @@ export async function POST(request: NextRequest) {
         const fieldMatch = fieldLine.match(/(\w+)\s+\w+/);
         if (fieldMatch) {
           const fieldName = fieldMatch[1];
-          const referencedTable = findReferencedTable(fieldName);
+          const referencedTable = findReferencedTableForType(fieldName);
 
           if (referencedTable) {
             const refKey = `${tableName}.${fieldName}-${referencedTable}.id`;
