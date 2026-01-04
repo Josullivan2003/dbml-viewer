@@ -8,20 +8,12 @@ BUBBLE TYPES ONLY: text, number, Y_N (yes/no), date (datetime), unique (primary 
 Examples: id (unique), user_id (user), post_id (post), chat_conversation_id (chat_conversation)
 - DO NOT use: int, decimal, boolean, datetime, timestamp, varchar
 
-BUBBLE LIST FIELDS (for schema descriptions only, NOT in DBML):
-Bubble supports "list of [table_name]" fields to store multiple references. Use lists INSTEAD of creating multiple columns of the same type.
-- CRITICAL: If you would otherwise create participant1_id, participant2_id, or user1_id, user2_id etc., use a single "list of users" field instead
-- Use only when the collection will not exceed 100 items
-- Do NOT add list fields to the DBML structure itself - keep the DBML simple
-- LIST FIELD NAMING: MUST use {entity}_ids format (plural entity name + _ids) to make the entity type clear
-  - Examples: user_ids, post_ids, comment_ids, participant_ids
-  - WRONG: users, participants, list, data, participant_user_ids (no double entity names)
-  - This naming convention allows the frontend to automatically detect and display as "list of [entity]"
-- In the DBML, list fields use "unique" type, e.g., "user_ids: unique [Note: 'Conversation participants']"
-  - Field name {entity}_ids indicates it's a list and what entity it contains
-  - Type "unique" marks it as a list field in DBML
-  - Note should describe the purpose/context, not repeat the entity name
-- Example: A conversation with multiple participants should have a "user_ids" field noted as "Conversation participants" - NOT participant1_id, participant2_id
+BUBBLE LIST FIELDS:
+For storing multiple references to the same entity, use list fields with naming: {entity}_ids (e.g., user_ids for multiple users)
+- Use lists INSTEAD of creating multiple columns like participant1_id, participant2_id
+- Only use when the list won't exceed 100 items
+- In DBML, use "unique" type for list fields
+- Example: user_ids field with type "unique" stores multiple user references
 
 RULES:
 1. Return ONLY valid DBML - no markdown code blocks
@@ -30,23 +22,13 @@ RULES:
 4. Add only essential new tables/fields for the feature
 5. Use snake_case names matching existing patterns - all lowercase with underscores
 6. Primary key fields (named "id") use "unique" type
-7. Foreign key fields MUST follow this pattern: {table_name}_id {referenced_table_name}
-   - Naming: MUST be exactly {table_name}_id with NO prefixes or suffixes
-   - Type: MUST be the referenced table name (NOT "unique")
-   - Examples: user_id user, post_id post, chat_conversation_id chat_conversation
-   - WRONG: sender_user_id unique, user_ID unique, userId unique (never use these)
+7. Foreign key fields: name as {table_name}_id, type as the referenced table name
+   - Examples: user_id user, post_id post, comment_id comment
 8. Relationships: > (many-to-one), < (one-to-many), - (one-to-one)
 9. Add table-level Note: "Simple one-sentence explanation"
 10. Add field-level Notes: "Simple one-line explanation"
-11. OPTIONAL - TABLEGROUP: At the END of the DBML, create a single TableGroup with color #FFBD94 containing:
-    - ALL new tables created for this feature
-    - ALL existing tables that are modified (have new fields added)
-    - Do NOT include existing tables that are only referenced but not modified
-    - CRITICAL SYNTAX: TableGroup "feature_name" [color: #FFBD94] { tables... Note: '''description''' }
-    - TableGroup name MUST be in quotes
-    - Color MUST use syntax: [color: #FFBD94]
-    - Include a Note section with triple quotes for multi-line description
-    - Only add TableGroup if there are new or modified tables
+11. OPTIONAL - TABLEGROUP: At the END of the DBML, create a single TableGroup with color #FFBD94 containing new and modified tables
+    - Syntax: TableGroup "feature_name" [color: #FFBD94] { tables... Note: '''description''' }
 
 EXAMPLES:
 Table "messages" {
@@ -73,9 +55,9 @@ Table "payroll_run" {
   status text [Note: "Payroll status"]
 }
 
-IMPORTANT DISTINCTION:
-- Single foreign key: {table}_id {table} (e.g., processed_by_user_id user)
-- List field (multiple references): {table}_ids unique (e.g., user_ids unique for list of users)
+IMPORTANT: For display purposes, both foreign keys and list fields show the referenced table name as their type:
+- user_id field displays as type: user
+- user_ids field displays as type: user
 
 TABLEGROUP EXAMPLE (with proper syntax):
 TableGroup "Messaging System" [color: #FFBD94] {
@@ -196,11 +178,8 @@ function extractFieldTypesFromDbml(dbml: string): { [tableName: string]: { [fiel
       if (fieldName === 'id') {
         bubbleType = 'unique';
       } else if (fieldName.endsWith('_ids')) {
-        // Extract table name from field name (user_ids -> users (list))
-        const entityName = fieldName.slice(0, -4); // Remove '_ids' suffix
-        // Simple pluralization: add 's' if not already ending in 's'
-        const pluralEntity = entityName.endsWith('s') ? entityName : `${entityName}s`;
-        bubbleType = `${pluralEntity} (list)`;
+        // Extract table name from field name (user_ids -> user)
+        bubbleType = fieldName.slice(0, -4); // Remove '_ids' suffix
       } else if (fieldName.endsWith('_id')) {
         // Extract table name from field name (user_id -> user)
         bubbleType = fieldName.slice(0, -3);
