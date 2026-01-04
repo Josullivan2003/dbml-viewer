@@ -119,24 +119,9 @@ function analyzeChanges(
       console.log(`Processing new table: ${tableName}`);
       console.log(`  bubbleFieldTypes[${tableName}]:`, bubbleFieldTypes?.[tableName]);
       const fieldsWithDescriptions = fields.map(field => {
-        let finalType = field.type;
-
-        // If field ends in _ids (list), pluralize and add (list) indicator
-        if (field.name.endsWith('_ids')) {
-          const entityName = field.name.slice(0, -4); // Remove '_ids'
-          const pluralEntity = entityName.endsWith('s') ? entityName : `${entityName}s`;
-          finalType = `${pluralEntity} (list)`;
-        } else if (field.name.endsWith('_id') && field.name !== 'id') {
-          // If field ends in _id, use the table name it references
-          finalType = field.name.slice(0, -3);
-        } else if (field.name === 'id') {
-          finalType = 'unique';
-        }
-
-        console.log(`  Field ${tableName}.${field.name}: dbml="${field.type}" -> display="${finalType}"`);
+        console.log(`  Field ${tableName}.${field.name}: type="${field.type}"`);
         return {
           ...field,
-          type: finalType,
           description: proposed.fieldNotes[tableName]?.[field.name],
         };
       });
@@ -152,24 +137,9 @@ function analyzeChanges(
       const added = fields.filter(f => !currentFieldNames.has(f.name));
       if (added.length > 0) {
         const fieldsWithDescriptions = added.map(field => {
-          let finalType = field.type;
-
-          // If field ends in _ids (list), pluralize and add (list) indicator
-          if (field.name.endsWith('_ids')) {
-            const entityName = field.name.slice(0, -4); // Remove '_ids'
-            const pluralEntity = entityName.endsWith('s') ? entityName : `${entityName}s`;
-            finalType = `${pluralEntity} (list)`;
-          } else if (field.name.endsWith('_id') && field.name !== 'id') {
-            // If field ends in _id, use the table name it references
-            finalType = field.name.slice(0, -3);
-          } else if (field.name === 'id') {
-            finalType = 'unique';
-          }
-
-          console.log(`New field in ${tableName}.${field.name}: dbml="${field.type}" -> display="${finalType}"`);
+          console.log(`New field in ${tableName}.${field.name}: type="${field.type}"`);
           return {
             ...field,
-            type: finalType,
             description: proposed.fieldNotes[tableName]?.[field.name],
           };
         });
