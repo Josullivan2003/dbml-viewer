@@ -8,18 +8,6 @@ BUBBLE TYPES ONLY: text, number, Y_N (yes/no), date (datetime), unique (primary 
 Examples: id (unique), user_id (user), post_id (post), chat_conversation_id (chat_conversation)
 - DO NOT use: int, decimal, boolean, datetime, timestamp, varchar
 
-BUBBLE LIST FIELDS (for schema descriptions only, NOT in DBML):
-Bubble supports "list of [table_name]" fields to store multiple references. Use lists INSTEAD of creating multiple columns of the same type.
-- CRITICAL: If you would otherwise create participant1_id, participant2_id, or user1_id, user2_id etc., use a single "list of users" field instead
-- Use only when the collection will not exceed 100 items
-- Do NOT add list fields to the DBML structure itself - keep the DBML simple
-- LIST FIELD NAMING: MUST use {entity}_ids format (plural entity name + _ids) to make the entity type clear
-  - Examples: user_ids, post_ids, comment_ids, participant_ids
-  - WRONG: users, participants, list, data, participant_user_ids (no double entity names)
-  - This naming convention allows the frontend to automatically detect and display as "list of [entity]"
-- Note should describe the purpose/context, not repeat the entity name
-- Example: A conversation with multiple participants should have a "user_ids" field noted as "Conversation participants" - NOT participant1_id, participant2_id
-
 RULES:
 1. Return ONLY valid DBML - no markdown code blocks
 2. Ensure ALL braces are balanced: each Table { must have a closing }
@@ -72,7 +60,6 @@ Table "payroll_run" {
 
 IMPORTANT DISTINCTION:
 - Single foreign key: {table}_id {table} (e.g., processed_by_user_id user)
-- List field (multiple references): {table}_ids {table}s list (e.g., user_ids users list for list of users)
 
 TABLEGROUP EXAMPLE (with proper syntax):
 TableGroup "Messaging System" [color: #FFBD94] {
