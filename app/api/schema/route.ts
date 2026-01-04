@@ -57,20 +57,10 @@ export async function POST(request: NextRequest) {
     const tableMatches = dbml.match(/Table\s+"([^"]+)"/g) || [];
     const definedTables = new Set(tableMatches.map(match => match.replace(/Table\s+"([^"]+)"/, "$1")));
 
-    // Remove references to tables that don't exist
+    // Keep existing Ref statements - don't remove them even if table not found
+    // (Render API may include valid refs we don't want to remove)
+    console.log("Keeping existing Ref statements from Render API");
     const lines = dbml.split("\n");
-    const filteredLines = lines.filter(line => {
-      const refMatch = line.match(/Ref:\s*(\w+)\./);
-      if (refMatch) {
-        const referencedTable = refMatch[1];
-        if (!definedTables.has(referencedTable)) {
-          console.log(`Removing invalid reference to table: ${referencedTable}`);
-          return false; // Remove this line
-        }
-      }
-      return true;
-    });
-    dbml = filteredLines.join("\n");
 
     // Generate missing relationships from foreign key fields
     // Extract all fields and generate Ref statements for _id fields
