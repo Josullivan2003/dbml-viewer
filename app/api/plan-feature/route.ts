@@ -36,7 +36,10 @@ RULES:
 8. Relationships: > (many-to-one), < (one-to-many), - (one-to-one)
 9. Add table-level Note: "Simple one-sentence explanation"
 10. Add field-level Notes: "Simple one-line explanation"
-11. Group new tables in TableGroup with color: #FFBD94
+11. TABLEGROUP: Create a TableGroup with color #FFBD94 containing:
+    - ALL new tables created for this feature
+    - ALL existing tables referenced by the new tables (via foreign keys)
+    - This visually groups the entire feature within the diagram
 
 EXAMPLES:
 Table "messages" {
@@ -62,6 +65,15 @@ Table "conversations" {
   user_ids unique [Note: "Conversation participants"]
   created_at date [Note: "When created"]
 }
+
+TABLEGROUP EXAMPLE:
+TableGroup messaging_feature #FFBD94 {
+  conversations
+  messages
+  user
+}
+
+This groups the new "conversations" and "messages" tables WITH the existing "user" table that they reference, visually showing how the feature integrates with the existing schema.
 
 Start response immediately with Table definitions.
 
