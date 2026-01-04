@@ -38,8 +38,9 @@ RULES:
 10. Add field-level Notes: "Simple one-line explanation"
 11. TABLEGROUP: Create a TableGroup with color #FFBD94 containing:
     - ALL new tables created for this feature
-    - ALL existing tables referenced by the new tables (via foreign keys)
-    - This visually groups the entire feature within the diagram
+    - ALL existing tables that are modified (have new fields added)
+    - Do NOT include existing tables that are only referenced but not modified
+    - This visually groups what's new or changed for this feature
 
 EXAMPLES:
 Table "messages" {
@@ -67,13 +68,19 @@ Table "conversations" {
 }
 
 TABLEGROUP EXAMPLE:
+If creating "conversations" and "messages" tables (new) and adding a "last_message_date" field to existing "user" table:
 TableGroup messaging_feature #FFBD94 {
   conversations
   messages
   user
 }
 
-This groups the new "conversations" and "messages" tables WITH the existing "user" table that they reference, visually showing how the feature integrates with the existing schema.
+If creating only "conversations" table without modifying other tables:
+TableGroup conversations_feature #FFBD94 {
+  conversations
+}
+
+NOTE: Even though "conversations" references "user" via user_ids, "user" is only in the group if it was modified (has new fields).
 
 Start response immediately with Table definitions.
 
