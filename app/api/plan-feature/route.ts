@@ -17,8 +17,9 @@ Bubble supports "list of [table_name]" fields to store multiple references. Use 
   - Examples: user_ids, post_ids, comment_ids, participant_ids
   - WRONG: users, participants, list, data, participant_user_ids (no double entity names)
   - This naming convention allows the frontend to automatically detect and display as "list of [entity]"
-- In the DBML, use a single field with a descriptive note, e.g., "user_ids: text [Note: 'Participants in conversation']"
-  - Note should describe what the list contains, not repeat the entity name (that's clear from field name)
+- In the DBML, list fields use the referenced table name as type (same as foreign keys), e.g., "user_ids: user [Note: 'Participants in conversation']"
+  - Field name {entity}_ids indicates it's a list, type {entity} indicates what it references
+  - Note should describe the purpose/context, not repeat the entity name
 - Example: A conversation with multiple participants should have a "user_ids" field noted as "Conversation participants" - NOT participant1_id, participant2_id
 
 RULES:
@@ -57,7 +58,7 @@ Table "conversations" {
   Note: "Stores group conversations between multiple users."
   id unique [primary key, Note: "Conversation ID"]
   title text [Note: "Conversation name"]
-  user_ids text [Note: "Conversation participants"]
+  user_ids user [Note: "Conversation participants"]
   created_at date [Note: "When created"]
 }
 
@@ -168,9 +169,11 @@ function extractFieldTypesFromDbml(dbml: string): { [tableName: string]: { [fiel
       if (fieldName === 'id') {
         bubbleType = 'unique';
       } else if (fieldName.endsWith('_ids')) {
-        // Extract table name from field name (user_ids -> list of users)
-        const entityName = fieldName.slice(0, -4); // Remove '_ids'
-        bubbleType = `list of ${entityName}`;
+        // Extract table name from field name (user_ids -> users (list))
+        const entityName = fieldName.slice(0, -4); // Remove '_ids' suffix
+        // Simple pluralization: add 's' if not already ending in 's'
+        const pluralEntity = entityName.endsWith('s') ? entityName : `${entityName}s`;
+        bubbleType = `${pluralEntity} (list)`;
       } else if (fieldName.endsWith('_id')) {
         // Extract table name from field name (user_id -> user)
         bubbleType = fieldName.slice(0, -3);
