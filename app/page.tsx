@@ -423,6 +423,12 @@ export default function Home() {
         body: JSON.stringify({ url }),
       });
 
+      const contentType = response.headers.get("content-type");
+      if (!contentType?.includes("application/json")) {
+        const text = await response.text();
+        throw new Error(`API returned non-JSON response: ${response.status} ${response.statusText}\n${text.substring(0, 200)}`);
+      }
+
       const data = await response.json();
 
       if (!response.ok || !data.dbml) {
@@ -446,6 +452,12 @@ export default function Home() {
           throw new Error(
             `Diagram API error: ${diagramResponse.status} ${diagramResponse.statusText}`
           );
+        }
+
+        const diagramContentType = diagramResponse.headers.get("content-type");
+        if (!diagramContentType?.includes("application/json")) {
+          const text = await diagramResponse.text();
+          throw new Error(`Diagram API returned non-JSON response: ${text.substring(0, 200)}`);
         }
 
         const diagramData = await diagramResponse.json();
