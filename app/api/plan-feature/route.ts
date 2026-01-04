@@ -17,10 +17,7 @@ Bubble supports "list of [table_name]" fields to store multiple references. Use 
   - Examples: user_ids, post_ids, comment_ids, participant_ids
   - WRONG: users, participants, list, data, participant_user_ids (no double entity names)
   - This naming convention allows the frontend to automatically detect and display as "list of [entity]"
-- In the DBML, list fields use "unique" type, e.g., "user_ids: unique [Note: 'Conversation participants']"
-  - Field name {entity}_ids indicates it's a list and what entity it contains
-  - Type "unique" marks it as a list field in DBML
-  - Note should describe the purpose/context, not repeat the entity name
+- Note should describe the purpose/context, not repeat the entity name
 - Example: A conversation with multiple participants should have a "user_ids" field noted as "Conversation participants" - NOT participant1_id, participant2_id
 
 RULES:
