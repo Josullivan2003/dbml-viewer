@@ -869,20 +869,6 @@ export default function Home() {
 
         {fetchState.status === "success" && fetchState.data && (
           <>
-            {/* Back Button and Input Area */}
-            <div className="w-full max-w-[80vw] mx-auto mb-4 flex items-center gap-3 px-4">
-              <button
-                onClick={() => setFetchState({ status: "idle" })}
-                className="flex items-center justify-center w-10 h-10 rounded-lg bg-white border-2 border-orange-500 hover:bg-orange-50 transition-colors flex-shrink-0"
-                aria-label="Go back"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-orange-500">
-                  <polyline points="15 18 9 12 15 6"></polyline>
-                </svg>
-              </button>
-              <div className="flex-1"></div>
-            </div>
-
             <div className="flex-1 flex flex-col w-full max-w-[80vw] mx-auto bg-white/40 backdrop-blur-xl rounded-lg overflow-hidden border border-white/20 shadow-xl relative z-10" style={{backgroundImage: 'linear-gradient(135deg, rgba(255,255,255,0.5) 0%, rgba(255,255,255,0.4) 100%)', boxShadow: '0 8px 32px rgba(31, 38, 135, 0.15), inset 0 0 0 1px rgba(255,255,255,0.3)'}}>
               {fetchState.diagramLoading && (
                 <div className="flex-1 flex flex-col items-center justify-center gap-4">
@@ -899,31 +885,42 @@ export default function Home() {
                 <div id="diagram-container" className="flex-1 flex flex-row p-4 bg-zinc-100 gap-4">
                   {/* Diagram Section */}
                   <div className="flex-1 flex flex-col min-w-0">
-                    {/* Current/Proposed Tabs */}
-                    {fetchState.featurePlanning?.status === "success" && (
-                      <div className="flex gap-2 mb-3 w-fit">
-                        <button
-                          onClick={() => handleToggleView("current")}
-                          className={`px-3 py-2 text-xs font-medium rounded-lg transition-colors ${
-                            fetchState.featurePlanning.activeView === "current"
-                              ? "bg-zinc-900 text-white"
-                              : "bg-zinc-100 text-zinc-700 hover:bg-zinc-200"
-                          }`}
-                        >
-                          Current
-                        </button>
-                        <button
-                          onClick={() => handleToggleView("proposed")}
-                          className={`px-3 py-2 text-xs font-medium rounded-lg transition-colors ${
-                            fetchState.featurePlanning.activeView === "proposed"
-                              ? "bg-zinc-900 text-white"
-                              : "bg-zinc-100 text-zinc-700 hover:bg-zinc-200"
-                          }`}
-                        >
-                          {fetchState.featurePlanning.featureTitle || "Proposed"}
-                        </button>
-                      </div>
-                    )}
+                    {/* Back Button and Current/Proposed Tabs */}
+                    <div className="flex gap-2 mb-3 w-fit items-center">
+                      <button
+                        onClick={() => setFetchState({ status: "idle" })}
+                        className="flex items-center justify-center w-10 h-10 rounded-lg bg-white border-2 border-orange-500 hover:bg-orange-50 transition-colors flex-shrink-0"
+                        aria-label="Go back"
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-orange-500">
+                          <polyline points="15 18 9 12 15 6"></polyline>
+                        </svg>
+                      </button>
+                      {fetchState.featurePlanning?.status === "success" && (
+                        <>
+                          <button
+                            onClick={() => handleToggleView("current")}
+                            className={`px-3 py-2 text-xs font-medium rounded-lg transition-colors ${
+                              fetchState.featurePlanning.activeView === "current"
+                                ? "bg-zinc-900 text-white"
+                                : "bg-zinc-100 text-zinc-700 hover:bg-zinc-200"
+                            }`}
+                          >
+                            Current
+                          </button>
+                          <button
+                            onClick={() => handleToggleView("proposed")}
+                            className={`px-3 py-2 text-xs font-medium rounded-lg transition-colors ${
+                              fetchState.featurePlanning.activeView === "proposed"
+                                ? "bg-zinc-900 text-white"
+                                : "bg-zinc-100 text-zinc-700 hover:bg-zinc-200"
+                            }`}
+                          >
+                            {fetchState.featurePlanning.featureTitle || "Proposed"}
+                          </button>
+                        </>
+                      )}
+                    </div>
 
                     {fetchState.iframeError ? (
                       <div className="flex-1 p-12 flex items-center justify-center">
