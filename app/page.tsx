@@ -1143,6 +1143,59 @@ export default function Home() {
                         >
                           Plan Another
                         </button>
+
+                        {/* Edit Schema Section */}
+                        <div className="border-t pt-4 space-y-2">
+                          <p className="text-xs font-semibold text-zinc-700">Quick Edit</p>
+                          <textarea
+                            id="schema-edit-input"
+                            placeholder="e.g., Add session_id field to users table"
+                            maxLength={300}
+                            className="w-full px-3 py-2 border border-zinc-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-zinc-900 resize-none"
+                            rows={2}
+                          />
+                          <button
+                            onClick={async () => {
+                              const input = document.getElementById("schema-edit-input") as HTMLTextAreaElement;
+                              if (!input?.value.trim()) return;
+
+                              try {
+                                const response = await fetch("/api/edit-dbml", {
+                                  method: "POST",
+                                  headers: { "Content-Type": "application/json" },
+                                  body: JSON.stringify({
+                                    currentDbml: fetchState.featurePlanning?.generatedDbml,
+                                    editInstruction: input.value,
+                                  }),
+                                });
+
+                                if (response.ok) {
+                                  const data = await response.json();
+                                  const newEmbedUrl = `https://dbdiagram.io/embed/${encodeURIComponent(data.updatedDbmlWithBubbleTypes)}`;
+
+                                  setFetchState(prev => ({
+                                    ...prev,
+                                    featurePlanning: {
+                                      ...prev.featurePlanning!,
+                                      generatedDbml: data.updatedDbml,
+                                      proposedEmbedUrl: newEmbedUrl,
+                                    },
+                                  }));
+
+                                  input.value = "";
+                                  alert("Schema updated!");
+                                } else {
+                                  alert("Failed to update schema");
+                                }
+                              } catch (error) {
+                                alert("Error: " + (error instanceof Error ? error.message : "Unknown error"));
+                              }
+                            }}
+                            className="w-full px-4 py-2 bg-orange-500 text-white text-sm font-medium rounded-lg hover:bg-orange-600 transition-colors"
+                          >
+                            Apply Edit
+                          </button>
+                        </div>
                       </div>
                     )}
 
