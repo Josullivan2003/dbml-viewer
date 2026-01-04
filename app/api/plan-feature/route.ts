@@ -36,11 +36,12 @@ RULES:
 8. Relationships: > (many-to-one), < (one-to-many), - (one-to-one)
 9. Add table-level Note: "Simple one-sentence explanation"
 10. Add field-level Notes: "Simple one-line explanation"
-11. TABLEGROUP: Create a TableGroup with color #FFBD94 containing:
+11. OPTIONAL - TABLEGROUP: At the END of the DBML, create a single TableGroup with color #FFBD94 containing:
     - ALL new tables created for this feature
     - ALL existing tables that are modified (have new fields added)
     - Do NOT include existing tables that are only referenced but not modified
-    - This visually groups what's new or changed for this feature
+    - Syntax: TableGroup feature_name #FFBD94 { table1 table2 table3 }
+    - Only add TableGroup if there are new or modified tables
 
 EXAMPLES:
 Table "messages" {
@@ -68,19 +69,10 @@ Table "conversations" {
 }
 
 TABLEGROUP EXAMPLE:
-If creating "conversations" and "messages" tables (new) and adding a "last_message_date" field to existing "user" table:
 TableGroup messaging_feature #FFBD94 {
   conversations
   messages
-  user
 }
-
-If creating only "conversations" table without modifying other tables:
-TableGroup conversations_feature #FFBD94 {
-  conversations
-}
-
-NOTE: Even though "conversations" references "user" via user_ids, "user" is only in the group if it was modified (has new fields).
 
 Start response immediately with Table definitions.
 
