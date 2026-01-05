@@ -108,18 +108,22 @@ function analyzeChanges(
   const tableDescriptions: { [tableName: string]: string } = {};
 
   console.log("=== ANALYZE CHANGES ===");
-  console.log("bubbleFieldTypes param exists:", !!bubbleFieldTypes);
-  console.log("bubbleFieldTypes:", JSON.stringify(bubbleFieldTypes, null, 2));
-  console.log("Available tables in bubbleFieldTypes:", Object.keys(bubbleFieldTypes || {}));
+  console.log("Current schema tables:", Object.keys(current.tables));
+  console.log("Proposed schema tables:", Object.keys(proposed.tables));
+
+  for (const tableName of Object.keys(current.tables)) {
+    console.log(`Current ${tableName} fields:`, current.tables[tableName].map(f => f.name).join(', '));
+  }
+  for (const tableName of Object.keys(proposed.tables)) {
+    console.log(`Proposed ${tableName} fields:`, proposed.tables[tableName].map(f => f.name).join(', '));
+  }
 
   // Find new tables and new fields in existing tables
   for (const [tableName, fields] of Object.entries(proposed.tables)) {
     if (!current.tables[tableName]) {
       // This is a new table - add descriptions from DBML notes
-      console.log(`Processing new table: ${tableName}`);
-      console.log(`  bubbleFieldTypes[${tableName}]:`, bubbleFieldTypes?.[tableName]);
+      console.log(`New table: ${tableName}`);
       const fieldsWithDescriptions = fields.map(field => {
-        console.log(`  Field ${tableName}.${field.name}: type="${field.type}"`);
         return {
           ...field,
           description: proposed.fieldNotes[tableName]?.[field.name],
@@ -134,10 +138,14 @@ function analyzeChanges(
     } else {
       // Check for new fields in existing table
       const currentFieldNames = new Set(current.tables[tableName].map(f => f.name));
+      const proposedFieldNames = fields.map(f => f.name);
       const added = fields.filter(f => !currentFieldNames.has(f.name));
+
+      console.log(`Table ${tableName}: current fields=${Array.from(currentFieldNames).join(',')}, proposed fields=${proposedFieldNames.join(',')}, added=${added.map(f => f.name).join(',')}`);
+
       if (added.length > 0) {
         const fieldsWithDescriptions = added.map(field => {
-          console.log(`New field in ${tableName}.${field.name}: type="${field.type}"`);
+          console.log(`  Added field: ${field.name}`);
           return {
             ...field,
             description: proposed.fieldNotes[tableName]?.[field.name],
@@ -152,6 +160,10 @@ function analyzeChanges(
       }
     }
   }
+
+  console.log("=== CHANGE ANALYSIS RESULT ===");
+  console.log("New tables:", Object.keys(newTables));
+  console.log("Modified tables (with new fields):", Object.keys(newFields));
 
   return { newTables, newFields, tableDescriptions };
 }
