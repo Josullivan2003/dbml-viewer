@@ -291,6 +291,7 @@ interface FetchState {
   diagramLoading?: boolean;
   iframeError?: boolean;
   error?: string;
+  successMessage?: string;
   featurePlanning?: {
     status: "idle" | "planning" | "generating" | "success" | "error";
     description?: string;
@@ -399,6 +400,15 @@ export default function Home() {
       return () => clearTimeout(timer);
     }
   }, [fetchState.status, fetchState.error]);
+
+  useEffect(() => {
+    if (fetchState.successMessage) {
+      const timer = setTimeout(() => {
+        setFetchState(prev => ({ ...prev, successMessage: undefined }));
+      }, 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [fetchState.successMessage]);
 
   useEffect(() => {
     if (fetchState.status === "loading") {
@@ -585,6 +595,7 @@ export default function Home() {
 
       setFetchState(prev => ({
         ...prev,
+        successMessage: "Schema generated!",
         featurePlanning: {
           status: "success",
           description: featureDescription,
@@ -866,10 +877,16 @@ export default function Home() {
             )}
         </div>
 
-        {/* Toast Notification */}
+        {/* Toast Notifications */}
         {fetchState.status === "error" && (
           <div className="fixed top-4 right-4 bg-red-500 text-white px-6 py-4 rounded-lg shadow-lg max-w-sm z-50 toast-enter">
             <p className="text-sm font-medium">{fetchState.error}</p>
+          </div>
+        )}
+
+        {fetchState.successMessage && (
+          <div className="fixed top-4 right-4 bg-green-500 text-white px-6 py-4 rounded-lg shadow-lg max-w-sm z-50 toast-enter">
+            <p className="text-sm font-medium">{fetchState.successMessage}</p>
           </div>
         )}
 
@@ -1045,10 +1062,6 @@ export default function Home() {
                     {/* Success State */}
                     {fetchState.featurePlanning?.status === "success" && (
                       <div className="flex-1 flex flex-col space-y-3 overflow-y-auto">
-                        <div className="bg-green-50 border border-green-200 rounded p-3">
-                          <p className="text-xs text-green-800 font-medium">✓ Schema generated!</p>
-                        </div>
-
                         {/* Changes Summary */}
                         {fetchState.featurePlanning!.changes && (Object.keys(fetchState.featurePlanning!.changes.newTables).length > 0 || Object.keys(fetchState.featurePlanning!.changes.newFields).length > 0) && (
                           <div className="bg-orange-50 border border-orange-200 rounded-lg p-2.5 space-y-2">
@@ -1209,6 +1222,7 @@ export default function Home() {
                                 // Step 4: Update state
                                 setFetchState(prev => ({
                                   ...prev,
+                                  successMessage: "Schema updated!",
                                   featurePlanning: {
                                     ...prev.featurePlanning!,
                                     generatedDbml: editData.updatedDbml,
@@ -1218,9 +1232,13 @@ export default function Home() {
                                 }));
 
                                 input.value = "";
-                                alert("Schema updated!");
                               } catch (error) {
-                                alert("Error: " + (error instanceof Error ? error.message : "Unknown error"));
+                                const errorMessage = error instanceof Error ? error.message : "Unknown error";
+                                setFetchState(prev => ({
+                                  ...prev,
+                                  error: errorMessage,
+                                  status: "error",
+                                }));
                               } finally {
                                 button.disabled = false;
                                 button.textContent = originalText;
