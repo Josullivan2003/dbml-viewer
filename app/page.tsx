@@ -997,6 +997,8 @@ export default function Home() {
           activeView: "proposed",
           changes,
           editedChanges: JSON.parse(JSON.stringify(changes)),
+          newTableOrder: Object.keys(changes.newTables),
+          newFieldTableOrder: Object.keys(changes.newFields),
           hasInlineEdits: false,
         },
       }));
@@ -1062,8 +1064,18 @@ export default function Home() {
 
       // Update order array - replace oldName with newName at the same position
       const orderKey = section === 'newTables' ? 'newTableOrder' : 'newFieldTableOrder';
-      const currentOrder = (prev.featurePlanning?.[orderKey as keyof typeof prev.featurePlanning] as string[] | undefined) || [];
+      let currentOrder = (prev.featurePlanning?.[orderKey as keyof typeof prev.featurePlanning] as string[] | undefined) || [];
+
+      // If order array is empty, initialize it with current table names (excluding the old name)
+      if (currentOrder.length === 0) {
+        currentOrder = Object.keys(sectionChanges).filter(t => t !== newName);
+      }
+
       const newOrder = currentOrder.map(t => t === oldName ? newName : t);
+      // Ensure new name is in the order if not already there
+      if (!newOrder.includes(newName)) {
+        newOrder.push(newName);
+      }
 
       // Track the table name change in tableNameMap
       const tableNameMap = { ...prev.featurePlanning?.tableNameMap };
