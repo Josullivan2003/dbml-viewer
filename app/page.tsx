@@ -1311,14 +1311,25 @@ export default function Home() {
       );
 
       // Convert to Bubble types for the diagram API
-      const updatedDbmlWithBubbleTypes = convertDbmlToBubbleTypes(updatedDbml);
+      let updatedDbmlWithBubbleTypes: string;
+      try {
+        updatedDbmlWithBubbleTypes = convertDbmlToBubbleTypes(updatedDbml);
+      } catch (e) {
+        console.error('Error converting DBML to Bubble types:', e);
+        throw new Error(`Failed to convert DBML types: ${e instanceof Error ? e.message : String(e)}`);
+      }
 
       console.log('📊 Generated DBML:');
-      console.log('  Length:', updatedDbml.length);
+      console.log('  Original length:', updatedDbml.length);
+      console.log('  With Bubble types length:', updatedDbmlWithBubbleTypes.length);
       console.log('  Full content:');
       console.log(updatedDbml);
       console.log('  With Bubble types:');
       console.log(updatedDbmlWithBubbleTypes);
+
+      // Log table count and names for debugging
+      const tableCountMatches = updatedDbmlWithBubbleTypes.match(/^Table\s+/gm);
+      console.log(`  Table count: ${tableCountMatches?.length || 0}`);
 
       // Validate DBML syntax
       const openBraces = (updatedDbmlWithBubbleTypes.match(/\{/g) || []).length;
@@ -1344,8 +1355,20 @@ export default function Home() {
       });
 
       if (!diagramResponse.ok) {
-        const error = await diagramResponse.json();
-        throw new Error(error.error || 'Failed to generate diagram');
+        // Try to parse as JSON, fall back to text if not JSON
+        let errorMessage = 'Failed to generate diagram';
+        const contentType = diagramResponse.headers.get('content-type');
+        if (contentType?.includes('application/json')) {
+          try {
+            const error = await diagramResponse.json();
+            errorMessage = error.error || errorMessage;
+          } catch {
+            errorMessage = `Diagram API error: ${diagramResponse.status} ${diagramResponse.statusText}`;
+          }
+        } else {
+          errorMessage = `Diagram API error: ${diagramResponse.status} ${diagramResponse.statusText}`;
+        }
+        throw new Error(errorMessage);
       }
 
       const diagramData = await diagramResponse.json();
