@@ -926,6 +926,7 @@ export default function Home() {
                           <>
                             {fetchState.featurePlanning.proposedEmbedUrl ? (
                               <iframe
+                                key={fetchState.featurePlanning.proposedEmbedUrl}
                                 src={fetchState.featurePlanning.proposedEmbedUrl}
                                 className="w-full flex-1 border-0 rounded-[9px]"
                                 title="Proposed Database Diagram"
@@ -1159,8 +1160,14 @@ export default function Home() {
                               const input = document.getElementById("schema-edit-input") as HTMLTextAreaElement;
                               if (!input?.value.trim()) return;
 
+                              const button = event?.target as HTMLButtonElement;
+                              const originalText = button.textContent;
+                              button.disabled = true;
+                              button.textContent = "Updating...";
+
                               try {
-                                const response = await fetch("/api/edit-dbml", {
+                                // Step 1: Get updated DBML from Claude
+                                const editResponse = await fetch("/api/edit-dbml", {
                                   method: "POST",
                                   headers: { "Content-Type": "application/json" },
                                   body: JSON.stringify({
@@ -1169,29 +1176,58 @@ export default function Home() {
                                   }),
                                 });
 
-                                if (response.ok) {
-                                  const data = await response.json();
-                                  const newEmbedUrl = `https://dbdiagram.io/embed/${encodeURIComponent(data.updatedDbmlWithBubbleTypes)}`;
-
-                                  setFetchState(prev => ({
-                                    ...prev,
-                                    featurePlanning: {
-                                      ...prev.featurePlanning!,
-                                      generatedDbml: data.updatedDbml,
-                                      proposedEmbedUrl: newEmbedUrl,
-                                    },
-                                  }));
-
-                                  input.value = "";
-                                  alert("Schema updated!");
-                                } else {
-                                  alert("Failed to update schema");
+                                if (!editResponse.ok) {
+                                  throw new Error("Failed to process edit");
                                 }
+
+                                const editData = await editResponse.json();
+
+                                // Step 2: Generate new diagram
+                                const diagramResponse = await fetch("/api/diagram", {
+                                  method: "POST",
+                                  headers: { "Content-Type": "application/json" },
+                                  body: JSON.stringify({
+                                    dbml: editData.updatedDbmlWithBubbleTypes,
+                                  }),
+                                });
+
+                                let newEmbedUrl = "";
+                                if (diagramResponse.ok) {
+                                  const diagramData = await diagramResponse.json();
+                                  newEmbedUrl = diagramData.embedUrl;
+                                } else {
+                                  // Fallback if diagram API fails
+                                  newEmbedUrl = `https://dbdiagram.io/embed/${encodeURIComponent(editData.updatedDbmlWithBubbleTypes)}`;
+                                }
+
+                                // Step 3: Analyze changes
+                                const changes = analyzeChanges(
+                                  fetchState.featurePlanning?.generatedDbml || "",
+                                  editData.updatedDbml,
+                                  editData.fieldTypes
+                                );
+
+                                // Step 4: Update state
+                                setFetchState(prev => ({
+                                  ...prev,
+                                  featurePlanning: {
+                                    ...prev.featurePlanning!,
+                                    generatedDbml: editData.updatedDbml,
+                                    proposedEmbedUrl: newEmbedUrl,
+                                    changes,
+                                  },
+                                }));
+
+                                input.value = "";
+                                alert("Schema updated!");
                               } catch (error) {
                                 alert("Error: " + (error instanceof Error ? error.message : "Unknown error"));
+                              } finally {
+                                button.disabled = false;
+                                button.textContent = originalText;
                               }
                             }}
-                            className="w-full px-4 py-2 bg-orange-500 text-white text-sm font-medium rounded-lg hover:bg-orange-600 transition-colors"
+                            className="w-full px-4 py-2 bg-orange-500 text-white text-sm font-medium rounded-lg hover:bg-orange-600 disabled:bg-gray-400 transition-colors"
                           >
                             Apply Edit
                           </button>
