@@ -2143,43 +2143,11 @@ export default function Home() {
 
                                 // Step 4: Update state
                                 setFetchState(prev => {
-                                  // Helper to check if a table has valid fields
-                                  const hasValidFields = (fields: any[]) => {
-                                    return fields.some(f => f.name?.trim() && f.type?.trim());
-                                  };
+                                  // Use the API response as the source of truth
+                                  // It already includes any inline-created tables since they were in the DBML sent to it
+                                  const editedChanges = JSON.parse(JSON.stringify(changes));
 
-                                  // Merge newly analyzed changes with existing inline edits
-                                  // Keep API changes for existing tables, preserve only truly new inline-created tables
-                                  const previousEdits = prev.featurePlanning?.editedChanges;
-
-                                  const mergedNewTables = { ...changes.newTables };
-                                  for (const [tableName, fields] of Object.entries(previousEdits?.newTables || {})) {
-                                    // Only preserve if not in API changes AND has valid fields
-                                    if (!changes.newTables[tableName] && hasValidFields(fields)) {
-                                      console.log(`📝 Preserving inline-created table: ${tableName}`);
-                                      mergedNewTables[tableName] = fields;
-                                    }
-                                  }
-
-                                  const mergedNewFields = { ...changes.newFields };
-                                  for (const [tableName, fields] of Object.entries(previousEdits?.newFields || {})) {
-                                    // Only preserve if not in API changes AND has valid fields
-                                    if (!changes.newFields[tableName] && hasValidFields(fields)) {
-                                      console.log(`📝 Preserving inline-created fields for: ${tableName}`);
-                                      mergedNewFields[tableName] = fields;
-                                    }
-                                  }
-
-                                  const editedChanges = {
-                                    newTables: mergedNewTables,
-                                    newFields: mergedNewFields,
-                                    tableDescriptions: {
-                                      ...changes.tableDescriptions,
-                                      ...(previousEdits?.tableDescriptions || {}),
-                                    },
-                                  };
-
-                                  console.log('🔀 Merged editedChanges after Apply Edit:', editedChanges);
+                                  console.log('✅ Applied API changes:', editedChanges);
 
                                   return {
                                     ...prev,
