@@ -2126,19 +2126,41 @@ export default function Home() {
                                 );
 
                                 // Step 4: Update state
-                                setFetchState(prev => ({
-                                  ...prev,
-                                  successMessage: "Schema updated!",
-                                  featurePlanning: {
-                                    ...prev.featurePlanning!,
-                                    generatedDbml: editData.updatedDbml,
-                                    proposedEmbedUrl: newEmbedUrl,
-                                    activeView: "proposed",
-                                    changes,
-                                    editedChanges: JSON.parse(JSON.stringify(changes)),
-                                    hasInlineEdits: false,
-                                  },
-                                }));
+                                setFetchState(prev => {
+                                  // Merge newly analyzed changes with existing inline edits
+                                  // Preserve any new tables/fields that were created inline but may not be in the API response
+                                  const previousEdits = prev.featurePlanning?.editedChanges;
+                                  const mergedEditedChanges = {
+                                    newTables: {
+                                      ...changes.newTables,
+                                      // Preserve any inline-created tables that aren't in the new changes
+                                      ...(previousEdits?.newTables || {}),
+                                    },
+                                    newFields: {
+                                      ...changes.newFields,
+                                      // Preserve any inline-created fields that aren't in the new changes
+                                      ...(previousEdits?.newFields || {}),
+                                    },
+                                    tableDescriptions: {
+                                      ...changes.tableDescriptions,
+                                      ...(previousEdits?.tableDescriptions || {}),
+                                    },
+                                  };
+
+                                  return {
+                                    ...prev,
+                                    successMessage: "Schema updated!",
+                                    featurePlanning: {
+                                      ...prev.featurePlanning!,
+                                      generatedDbml: editData.updatedDbml,
+                                      proposedEmbedUrl: newEmbedUrl,
+                                      activeView: "proposed",
+                                      changes,
+                                      editedChanges: mergedEditedChanges,
+                                      hasInlineEdits: false,
+                                    },
+                                  };
+                                });
 
                                 input.value = "";
                               } catch (error) {
