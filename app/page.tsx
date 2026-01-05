@@ -283,6 +283,7 @@ interface FetchState {
     status: "idle" | "planning" | "generating" | "success" | "error";
     description?: string;
     featureTitle?: string;
+    originalDbml?: string;
     generatedDbml?: string;
     proposedEmbedUrl?: string;
     error?: string;
@@ -577,6 +578,7 @@ export default function Home() {
           status: "success",
           description: featureDescription,
           featureTitle: data.featureTitle || featureDescription,
+          originalDbml: fetchState.data,
           generatedDbml: data.generatedDbml,
           proposedEmbedUrl: diagramData.embedUrl,
           activeView: "proposed",
@@ -1200,9 +1202,9 @@ export default function Home() {
                                   newEmbedUrl = `https://dbdiagram.io/embed/${encodeURIComponent(editData.updatedDbmlWithBubbleTypes)}`;
                                 }
 
-                                // Step 3: Analyze changes
+                                // Step 3: Analyze changes (compare against original schema)
                                 const changes = analyzeChanges(
-                                  fetchState.featurePlanning?.generatedDbml || "",
+                                  fetchState.featurePlanning?.originalDbml || "",
                                   editData.updatedDbml,
                                   editData.fieldTypes
                                 );
