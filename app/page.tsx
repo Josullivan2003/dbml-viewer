@@ -335,6 +335,7 @@ function convertChangesToDbml(
   tableNameMap?: { [oldName: string]: string }
 ): string {
   console.log('=== convertChangesToDbml START ===');
+  console.log('🔄 tableNameMap:', tableNameMap);
   console.log('📋 editedChanges structure:');
   console.log('  newTables:', Object.keys(editedChanges.newTables));
   console.log('  newFields:', Object.keys(editedChanges.newFields));
@@ -377,10 +378,19 @@ function convertChangesToDbml(
     }
     if (hasValidFields(fields)) {
       // Update field types to reflect renamed tables
-      const updatedFields = fields.map(field => ({
-        ...field,
-        type: tableNameMap?.[field.type] || field.type,
-      }));
+      const updatedFields = fields.map(field => {
+        const mappedType = tableNameMap?.[field.type] || field.type;
+        // Log the type mapping if it changed
+        if (mappedType !== field.type) {
+          console.log(`  🔄 Field "${field.name}" type mapped: "${field.type}" → "${mappedType}"`);
+        }
+        return {
+          ...field,
+          type: mappedType,
+        };
+      });
+      // Log final field types after mapping
+      console.log(`  Final fields for "${tableName}":`, updatedFields.map(f => `${f.name}(${f.type})`).join(', '));
       const description = editedChanges.tableDescriptions?.[tableName];
       const generatedTable = generateTableDbml(tableName, updatedFields, description);
       console.log(`✅ Adding table "${tableName}" to DBML`);
@@ -398,7 +408,17 @@ function convertChangesToDbml(
       console.log(`ℹ️ Skipping "${tableName}" from newFields - already processed from newTables`);
       continue;
     }
-    const originalFields = current.tables[tableName] || [];
+    // If this table was renamed, look up the original fields by the old name
+    let lookupTableName = tableName;
+    for (const [oldName, newName] of Object.entries(tableNameMap || {})) {
+      if (newName === tableName) {
+        lookupTableName = oldName;
+        console.log(`  🔍 Table "${tableName}" was renamed from "${oldName}", looking up original fields by old name`);
+        break;
+      }
+    }
+    const originalFields = current.tables[lookupTableName] || [];
+    console.log(`  📦 Original fields for "${lookupTableName}": ${originalFields.length}`);
     const allFields = [...originalFields, ...newFields];
     // Update field types to reflect renamed tables
     const updatedAllFields = allFields.map(field => ({
@@ -415,8 +435,13 @@ function convertChangesToDbml(
 
   // Add original tables (from pre-feature schema) that haven't been modified or deleted
   // Don't re-add tables that are managed by editedChanges (even if deleted from editedChanges)
+  // Check both the original name and any renamed version
   for (const [tableName, fields] of Object.entries(preFeature.tables)) {
-    if (!addedTables.has(tableName) && !managedTables.has(tableName)) {
+    // Check if this table or its renamed version is already being managed
+    const isManaged = managedTables.has(tableName) ||
+      Object.values(tableNameMap || {}).some(newName => newName === tableName);
+
+    if (!addedTables.has(tableName) && !isManaged) {
       console.log(`📖 Generating original table "${tableName}": ${fields.length} fields (unmodified)`);
       // Update field types to reflect renamed tables
       const updatedFields = fields.map(field => ({
@@ -427,6 +452,8 @@ function convertChangesToDbml(
         dbmlParts.push(generateTableDbml(tableName, updatedFields, preFeature.tableNotes[tableName]));
         addedTables.add(tableName);
       }
+    } else if (isManaged && !addedTables.has(tableName)) {
+      console.log(`ℹ️ Skipping original table "${tableName}" - it's managed by editedChanges (may be deleted or renamed)`);
     }
   }
 
