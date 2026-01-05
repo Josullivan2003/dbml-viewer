@@ -1320,6 +1320,22 @@ export default function Home() {
       console.log('  With Bubble types:');
       console.log(updatedDbmlWithBubbleTypes);
 
+      // Validate DBML syntax
+      const openBraces = (updatedDbmlWithBubbleTypes.match(/\{/g) || []).length;
+      const closeBraces = (updatedDbmlWithBubbleTypes.match(/\}/g) || []).length;
+      if (openBraces !== closeBraces) {
+        throw new Error(`Unbalanced braces in DBML: ${openBraces} open, ${closeBraces} close`);
+      }
+
+      // Check for duplicate tables
+      const tableMatches = Array.from(updatedDbmlWithBubbleTypes.matchAll(/Table\s+(?:"([^"]+)"|(\w+))\s*\{/g));
+      const tableNames = tableMatches.map(m => m[1] || m[2]);
+      const duplicates = tableNames.filter((t, i) => tableNames.indexOf(t) !== i);
+      if (duplicates.length > 0) {
+        throw new Error(`Duplicate tables in DBML: ${[...new Set(duplicates)].join(', ')}`);
+      }
+      console.log(`✅ DBML validation passed: ${tableNames.length} unique tables, braces balanced`);
+
       // Generate diagram
       const diagramResponse = await fetch('/api/diagram', {
         method: 'POST',
@@ -2127,25 +2143,43 @@ export default function Home() {
 
                                 // Step 4: Update state
                                 setFetchState(prev => {
+                                  // Helper to check if a table has valid fields
+                                  const hasValidFields = (fields: any[]) => {
+                                    return fields.some(f => f.name?.trim() && f.type?.trim());
+                                  };
+
                                   // Merge newly analyzed changes with existing inline edits
-                                  // Preserve any new tables/fields that were created inline but may not be in the API response
+                                  // Keep API changes for existing tables, preserve only truly new inline-created tables
                                   const previousEdits = prev.featurePlanning?.editedChanges;
-                                  const mergedEditedChanges = {
-                                    newTables: {
-                                      ...changes.newTables,
-                                      // Preserve any inline-created tables that aren't in the new changes
-                                      ...(previousEdits?.newTables || {}),
-                                    },
-                                    newFields: {
-                                      ...changes.newFields,
-                                      // Preserve any inline-created fields that aren't in the new changes
-                                      ...(previousEdits?.newFields || {}),
-                                    },
+
+                                  const mergedNewTables = { ...changes.newTables };
+                                  for (const [tableName, fields] of Object.entries(previousEdits?.newTables || {})) {
+                                    // Only preserve if not in API changes AND has valid fields
+                                    if (!changes.newTables[tableName] && hasValidFields(fields)) {
+                                      console.log(`📝 Preserving inline-created table: ${tableName}`);
+                                      mergedNewTables[tableName] = fields;
+                                    }
+                                  }
+
+                                  const mergedNewFields = { ...changes.newFields };
+                                  for (const [tableName, fields] of Object.entries(previousEdits?.newFields || {})) {
+                                    // Only preserve if not in API changes AND has valid fields
+                                    if (!changes.newFields[tableName] && hasValidFields(fields)) {
+                                      console.log(`📝 Preserving inline-created fields for: ${tableName}`);
+                                      mergedNewFields[tableName] = fields;
+                                    }
+                                  }
+
+                                  const editedChanges = {
+                                    newTables: mergedNewTables,
+                                    newFields: mergedNewFields,
                                     tableDescriptions: {
                                       ...changes.tableDescriptions,
                                       ...(previousEdits?.tableDescriptions || {}),
                                     },
                                   };
+
+                                  console.log('🔀 Merged editedChanges after Apply Edit:', editedChanges);
 
                                   return {
                                     ...prev,
@@ -2156,7 +2190,10 @@ export default function Home() {
                                       proposedEmbedUrl: newEmbedUrl,
                                       activeView: "proposed",
                                       changes,
-                                      editedChanges: mergedEditedChanges,
+                                      editedChanges,
+                                      newTableOrder: Object.keys(editedChanges.newTables),
+                                      newFieldTableOrder: Object.keys(editedChanges.newFields),
+                                      tableNameMap: {}, // Reset table name map after Apply Edit
                                       hasInlineEdits: false,
                                     },
                                   };
