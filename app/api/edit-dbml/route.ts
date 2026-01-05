@@ -19,10 +19,11 @@ RULES:
 2. Ensure ALL braces are balanced
 3. Include ALL existing tables with current state plus your edits
 4. Use snake_case names - all lowercase with underscores
-5. Primary key fields (named "id") use "unique" type
+5. Primary key fields (named "id") use "unique" type - DO NOT add notes to id fields
 6. Foreign key fields: {table_name}_id {referenced_table_name}
 7. Relationships: > (many-to-one), < (one-to-many), - (one-to-one)
-8. Add table and field notes for clarity
+8. Add table and field notes for clarity (but NOT for id/primary key fields)
+9. Preserve all existing Ref statements exactly as they are
 
 Return ONLY the complete updated DBML. Nothing else.`;
 }
@@ -69,12 +70,12 @@ function convertDbmlTypeToBubbleType(dbmlType: string): string {
 
 function extractFieldTypesFromDbml(dbml: string): { [tableName: string]: { [fieldName: string]: string } } {
   const fieldTypes: { [tableName: string]: { [fieldName: string]: string } } = {};
-  const tableRegex = /Table\s+"([^"]+)"\s*\{([^}]+)\}/g;
+  const tableRegex = /Table\s+(?:"([^"]+)"|(\w+))\s*\{([^}]+)\}/g;
   let tableMatch;
 
   while ((tableMatch = tableRegex.exec(dbml)) !== null) {
-    const tableName = tableMatch[1];
-    const tableContent = tableMatch[2];
+    const tableName = tableMatch[1] || tableMatch[2];
+    const tableContent = tableMatch[3];
     fieldTypes[tableName] = {};
 
     const fieldRegex = /(\w+)\s+(\w+(?:\s*<\s*\w+(?:\s*,\s*\w+)*>)?)\s*(?:\[|;|Note:|$)/g;
@@ -114,12 +115,12 @@ function convertDbmlToBubbleTypes(dbml: string): string {
 
 function extractTableDescriptions(dbml: string): { [tableName: string]: string } {
   const tableDescriptions: { [tableName: string]: string } = {};
-  const tableRegex = /Table\s+"([^"]+)"\s*\{([^}]+)\}/g;
+  const tableRegex = /Table\s+(?:"([^"]+)"|(\w+))\s*\{([^}]+)\}/g;
   let tableMatch;
 
   while ((tableMatch = tableRegex.exec(dbml)) !== null) {
-    const tableName = tableMatch[1];
-    const tableBody = tableMatch[2];
+    const tableName = tableMatch[1] || tableMatch[2];
+    const tableBody = tableMatch[3];
     const tableNoteMatch = tableBody.match(/^\s*Note:\s*"([^"]+)"/m);
     if (tableNoteMatch) {
       tableDescriptions[tableName] = tableNoteMatch[1];

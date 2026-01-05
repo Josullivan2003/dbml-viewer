@@ -154,12 +154,12 @@ function extractFieldTypesFromDbml(dbml: string): { [tableName: string]: { [fiel
   const fieldTypes: { [tableName: string]: { [fieldName: string]: string } } = {};
 
   // Match table definitions
-  const tableRegex = /Table\s+"([^"]+)"\s*\{([^}]+)\}/g;
+  const tableRegex = /Table\s+(?:"([^"]+)"|(\w+))\s*\{([^}]+)\}/g;
   let tableMatch;
 
   while ((tableMatch = tableRegex.exec(dbml)) !== null) {
-    const tableName = tableMatch[1];
-    const tableContent = tableMatch[2];
+    const tableName = tableMatch[1] || tableMatch[2];
+    const tableContent = tableMatch[3];
 
     fieldTypes[tableName] = {};
 

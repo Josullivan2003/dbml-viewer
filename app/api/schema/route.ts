@@ -54,8 +54,12 @@ export async function POST(request: NextRequest) {
     }
 
     // Extract all table names defined in the DBML
-    const tableMatches = dbml.match(/Table\s+"([^"]+)"/g) || [];
-    const definedTables = new Set(tableMatches.map(match => match.replace(/Table\s+"([^"]+)"/, "$1")));
+    const tableMatches = dbml.matchAll(/Table\s+(?:"([^"]+)"|(\w+))/g);
+    const definedTables = new Set();
+    for (const match of tableMatches) {
+      const tableName = match[1] || match[2];
+      if (tableName) definedTables.add(tableName);
+    }
 
     // Keep existing Ref statements - don't remove them even if table not found
     // (Render API may include valid refs we don't want to remove)
@@ -123,7 +127,7 @@ export async function POST(request: NextRequest) {
 
     // Generate missing relationships from foreign key fields
     // Extract all fields and generate Ref statements for _id fields
-    const tableMatches2 = dbml.matchAll(/Table\s+"([^"]+)"\s*\{([^}]*)\}/g);
+    const tableMatches2 = dbml.matchAll(/Table\s+(?:"([^"]+)"|(\w+))\s*\{([^}]*)\}/g);
     const generatedRefs: string[] = [];
     const existingRefs = new Set();
 
@@ -136,8 +140,8 @@ export async function POST(request: NextRequest) {
     });
 
     for (const match of tableMatches2) {
-      const tableName = match[1];
-      const tableBody = match[2];
+      const tableName = match[1] || match[2];
+      const tableBody = match[3];
       const fieldLines = tableBody.split("\n");
 
       for (const fieldLine of fieldLines) {
