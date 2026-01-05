@@ -45,11 +45,11 @@ function parseDbml(dbml: string): {
   const tableNotes: { [tableName: string]: string } = {};
   const fieldNotes: { [tableName: string]: { [fieldName: string]: string } } = {};
 
-  const tableMatches = dbml.matchAll(/Table\s+"?(\w+)"?\s*\{([^}]*)\}/g);
+  const tableMatches = dbml.matchAll(/Table\s+(?:"([^"]+)"|(\w+))\s*\{([^}]*)\}/g);
 
   for (const match of tableMatches) {
-    const tableName = match[1];
-    const tableBody = match[2];
+    const tableName = match[1] || match[2];
+    const tableBody = match[3];
     const fields: TableField[] = [];
 
     // Extract table-level note
@@ -70,11 +70,16 @@ function parseDbml(dbml: string): {
       if (!fieldMatch) continue;
 
       const fieldName = fieldMatch[1];
-      const fieldType = fieldMatch[2].trim();
+      let fieldType = fieldMatch[2].trim();
       const constraints = fieldMatch[3] || "";
 
       // Skip if not a valid field
       if (!fieldName || !fieldType || fieldName === "Note") continue;
+
+      // Include constraints in the type field to preserve them
+      if (constraints) {
+        fieldType += ` [${constraints}]`;
+      }
 
       fields.push({ name: fieldName, type: fieldType });
 
@@ -118,15 +123,26 @@ function analyzeChanges(
     console.log(`Proposed ${tableName} fields:`, proposed.tables[tableName].map(f => f.name).join(', '));
   }
 
+  // Helper function to clean Note constraints from type field
+  const cleanTypeField = (fieldType: string, description?: string): string => {
+    // Remove any [Note: "..."] constraints from the type field since we're moving them to description
+    let cleaned = fieldType.replace(/,?\s*Note:\s*"[^"]*"/g, '');
+    // Clean up any empty brackets
+    cleaned = cleaned.replace(/\[\s*,\s*/, '[').replace(/,\s*\]/, ']').replace(/\[\s*\]/, '');
+    return cleaned.trim();
+  };
+
   // Find new tables and new fields in existing tables
   for (const [tableName, fields] of Object.entries(proposed.tables)) {
     if (!current.tables[tableName]) {
       // This is a new table - add descriptions from DBML notes
       console.log(`New table: ${tableName}`);
       const fieldsWithDescriptions = fields.map(field => {
+        const description = proposed.fieldNotes[tableName]?.[field.name];
         return {
-          ...field,
-          description: proposed.fieldNotes[tableName]?.[field.name],
+          name: field.name,
+          type: cleanTypeField(field.type, description),
+          description: description,
         };
       });
       newTables[tableName] = fieldsWithDescriptions;
@@ -146,9 +162,11 @@ function analyzeChanges(
       if (added.length > 0) {
         const fieldsWithDescriptions = added.map(field => {
           console.log(`  Added field: ${field.name}`);
+          const description = proposed.fieldNotes[tableName]?.[field.name];
           return {
-            ...field,
-            description: proposed.fieldNotes[tableName]?.[field.name],
+            name: field.name,
+            type: cleanTypeField(field.type, description),
+            description: description,
           };
         });
         newFields[tableName] = fieldsWithDescriptions;
@@ -302,7 +320,380 @@ interface FetchState {
     error?: string;
     activeView?: "current" | "proposed";
     changes?: SchemaChange;
+    editedChanges?: SchemaChange;
+    hasInlineEdits?: boolean;
+    newTableOrder?: string[];
+    newFieldTableOrder?: string[];
+    tableNameMap?: { [oldName: string]: string };
   };
+}
+
+function convertChangesToDbml(
+  preFeatureDbml: string,
+  currentGeneratedDbml: string,
+  editedChanges: SchemaChange,
+  tableNameMap?: { [oldName: string]: string }
+): string {
+  console.log('=== convertChangesToDbml START ===');
+  console.log('📋 editedChanges structure:');
+  console.log('  newTables:', Object.keys(editedChanges.newTables));
+  console.log('  newFields:', Object.keys(editedChanges.newFields));
+
+  // Log details of each edited table
+  for (const [tableName, fields] of Object.entries(editedChanges.newTables)) {
+    console.log(`  newTables.${tableName}: ${fields.length} fields`);
+    fields.forEach((f, i) => console.log(`    [${i}] name="${f.name}" type="${f.type}" desc="${f.description || ''}"`));
+  }
+  for (const [tableName, fields] of Object.entries(editedChanges.newFields)) {
+    console.log(`  newFields.${tableName}: ${fields.length} fields`);
+    fields.forEach((f, i) => console.log(`    [${i}] name="${f.name}" type="${f.type}" desc="${f.description || ''}"`));
+  }
+
+  const preFeature = parseDbml(preFeatureDbml);
+  const current = parseDbml(currentGeneratedDbml);
+  const dbmlParts: string[] = [];
+
+  // Helper function to check if a table would have any valid fields
+  const hasValidFields = (fields: any[]) => {
+    return fields.some(f => f.name?.trim() && f.type?.trim());
+  };
+
+  // Track which tables have been added
+  const addedTables = new Set<string>();
+
+  // Track which tables are being managed by editedChanges (so we don't re-add them as original tables if deleted)
+  const managedTables = new Set([
+    ...Object.keys(editedChanges.newTables),
+    ...Object.keys(editedChanges.newFields),
+  ]);
+
+  // Add tables from editedChanges.newTables (these have inline edits)
+  for (const [tableName, fields] of Object.entries(editedChanges.newTables)) {
+    console.log(`📝 Generating table from newTables "${tableName}": ${fields.length} fields (uses edited version)`);
+    fields.forEach((f, i) => console.log(`  [${i}] name="${f.name}" type="${f.type}"`));
+    if (!tableName?.trim()) {
+      console.log(`⏭️ Skipping table with empty name`);
+      continue;
+    }
+    if (hasValidFields(fields)) {
+      // Update field types to reflect renamed tables
+      const updatedFields = fields.map(field => ({
+        ...field,
+        type: tableNameMap?.[field.type] || field.type,
+      }));
+      const description = editedChanges.tableDescriptions?.[tableName];
+      const generatedTable = generateTableDbml(tableName, updatedFields, description);
+      console.log(`✅ Adding table "${tableName}" to DBML`);
+      dbmlParts.push(generatedTable);
+      addedTables.add(tableName);
+    } else {
+      console.log(`⏭️ Table "${tableName}" has no valid fields, skipping`);
+    }
+  }
+
+  // Add modified existing tables (with new fields added via newFields)
+  for (const [tableName, newFields] of Object.entries(editedChanges.newFields)) {
+    // Skip if already added from newTables
+    if (addedTables.has(tableName)) {
+      console.log(`ℹ️ Skipping "${tableName}" from newFields - already processed from newTables`);
+      continue;
+    }
+    const originalFields = current.tables[tableName] || [];
+    const allFields = [...originalFields, ...newFields];
+    // Update field types to reflect renamed tables
+    const updatedAllFields = allFields.map(field => ({
+      ...field,
+      type: tableNameMap?.[field.type] || field.type,
+    }));
+    console.log(`✏️ Generating modified table "${tableName}": ${originalFields.length} original + ${newFields.length} new = ${allFields.length} total`);
+    updatedAllFields.forEach((f, i) => console.log(`  [${i}] name="${f.name}" type="${f.type}"`));
+    if (hasValidFields(updatedAllFields)) {
+      dbmlParts.push(generateTableDbml(tableName, updatedAllFields, current.tableNotes[tableName]));
+      addedTables.add(tableName);
+    }
+  }
+
+  // Add original tables (from pre-feature schema) that haven't been modified or deleted
+  // Don't re-add tables that are managed by editedChanges (even if deleted from editedChanges)
+  for (const [tableName, fields] of Object.entries(preFeature.tables)) {
+    if (!addedTables.has(tableName) && !managedTables.has(tableName)) {
+      console.log(`📖 Generating original table "${tableName}": ${fields.length} fields (unmodified)`);
+      // Update field types to reflect renamed tables
+      const updatedFields = fields.map(field => ({
+        ...field,
+        type: tableNameMap?.[field.type] || field.type,
+      }));
+      if (hasValidFields(updatedFields)) {
+        dbmlParts.push(generateTableDbml(tableName, updatedFields, preFeature.tableNotes[tableName]));
+        addedTables.add(tableName);
+      }
+    }
+  }
+
+  // Build a set of all existing fields in the current schema
+  const existingFields = new Set<string>();
+  for (const [tableName, fields] of Object.entries(editedChanges.newTables)) {
+    if (addedTables.has(tableName)) {
+      for (const field of fields) {
+        if (field.name?.trim()) {
+          existingFields.add(`${tableName}.${field.name}`);
+        }
+      }
+    }
+  }
+  for (const [tableName, fields] of Object.entries(editedChanges.newFields)) {
+    if (addedTables.has(tableName)) {
+      for (const field of fields) {
+        if (field.name?.trim()) {
+          existingFields.add(`${tableName}.${field.name}`);
+        }
+      }
+    }
+  }
+  // Also add original fields from unmodified tables
+  for (const [tableName, fields] of Object.entries(preFeature.tables)) {
+    if (addedTables.has(tableName) && !managedTables.has(tableName)) {
+      for (const field of fields) {
+        if (field.name?.trim()) {
+          existingFields.add(`${tableName}.${field.name}`);
+        }
+      }
+    }
+  }
+
+  // Extract and preserve relationship references (Ref statements) from current DBML
+  // But only keep Refs where both tables exist, and the field in the source table exists
+  const refMatches = currentGeneratedDbml.matchAll(/Ref:\s*([^\s.]+)\.(\w+)\s*([<>]|-)\s*([^\s.]+)\.(\w+)[^\n]*/g);
+  const refs: string[] = [];
+  for (const match of refMatches) {
+    let sourceTable = match[1];
+    const sourceField = match[2];
+    let targetTable = match[4];
+    const operator = match[3];
+    const targetField = match[5];
+
+    // Map old table names to new ones if they were renamed
+    sourceTable = tableNameMap?.[sourceTable] || sourceTable;
+    targetTable = tableNameMap?.[targetTable] || targetTable;
+
+    // Only include this Ref if both tables exist AND the source field exists
+    if (addedTables.has(sourceTable) && addedTables.has(targetTable) && existingFields.has(`${sourceTable}.${sourceField}`)) {
+      const refStatement = `Ref: ${sourceTable}.${sourceField} ${operator} ${targetTable}.${targetField}`;
+      refs.push(refStatement);
+      console.log(`🔗 Keeping Ref: ${sourceTable}.${sourceField} ${operator} ${targetTable}.${targetField}`);
+    } else {
+      console.log(`⏭️ Removing Ref: ${sourceTable}.${sourceField} ${operator} ${targetTable}.${targetField} (table or field deleted)`);
+    }
+  }
+
+  console.log('🔗 Refs after filtering:', refs.length);
+  refs.forEach((ref, i) => console.log(`  ${i + 1}. ${ref}`));
+
+  // Generate new Refs from fields that reference tables by type
+  const bubbleTypes = new Set(['text', 'number', 'Y_N', 'date', 'unique']);
+  const existingRefSet = new Set(refs.map(r => {
+    const match = r.match(/Ref:\s*([^\s.]+)\.(\w+)\s*([<>]|-)\s*([^\s.]+)\.(\w+)/);
+    return match ? `${match[1]}.${match[2]}-${match[4]}.${match[5]}` : '';
+  }));
+
+  // Check all fields in newTables and newFields for table references
+  const autoGeneratedRefs: string[] = [];
+
+  for (const [tableName, fields] of Object.entries(editedChanges.newTables)) {
+    if (!addedTables.has(tableName)) continue;
+
+    for (const field of fields) {
+      let fieldType = field.type?.trim();
+      // Map renamed tables
+      fieldType = tableNameMap?.[fieldType] || fieldType;
+      // If the field type is a table name (not a bubble type) and the table exists
+      if (fieldType && !bubbleTypes.has(fieldType) && addedTables.has(fieldType)) {
+        const refKey = `${tableName}.${field.name}-${fieldType}.id`;
+        // Only add if this Ref doesn't already exist
+        if (!existingRefSet.has(refKey)) {
+          const refStatement = `Ref: ${tableName}.${field.name} > ${fieldType}.id`;
+          autoGeneratedRefs.push(refStatement);
+          console.log(`🔗 Auto-generating Ref: ${tableName}.${field.name} > ${fieldType}.id`);
+        }
+      }
+    }
+  }
+
+  for (const [tableName, newFields] of Object.entries(editedChanges.newFields)) {
+    if (!addedTables.has(tableName)) continue;
+
+    for (const field of newFields) {
+      let fieldType = field.type?.trim();
+      // Map renamed tables
+      fieldType = tableNameMap?.[fieldType] || fieldType;
+      // If the field type is a table name (not a bubble type) and the table exists
+      if (fieldType && !bubbleTypes.has(fieldType) && addedTables.has(fieldType)) {
+        const refKey = `${tableName}.${field.name}-${fieldType}.id`;
+        // Only add if this Ref doesn't already exist
+        if (!existingRefSet.has(refKey)) {
+          const refStatement = `Ref: ${tableName}.${field.name} > ${fieldType}.id`;
+          autoGeneratedRefs.push(refStatement);
+          console.log(`🔗 Auto-generating Ref: ${tableName}.${field.name} > ${fieldType}.id`);
+        }
+      }
+    }
+  }
+
+  // Combine existing and auto-generated refs
+  const allRefs = [...refs, ...autoGeneratedRefs];
+  console.log(`🔗 Total Refs (including auto-generated): ${allRefs.length}`);
+
+  // Extract and preserve TableGroup statements from current DBML
+  // Use [\s\S]*? to match multi-line content (dot doesn't match newlines by default)
+  const tableGroupMatches = currentGeneratedDbml.matchAll(/TableGroup\s+[^\{]+\{[\s\S]*?\}/g);
+  let tableGroups = Array.from(tableGroupMatches).map(m => m[0]);
+
+  console.log('📦 TableGroups extracted:', tableGroups.length);
+  tableGroups.forEach((group, i) => console.log(`  ${i + 1}. ${group.split('\n')[0]}`));
+
+  // Update TableGroups to include newly added tables
+  if (tableGroups.length > 0 && addedTables.size > 0) {
+    tableGroups = tableGroups.map(tableGroup => {
+      // Extract the table list from TableGroup (tables are listed one per line or space-separated)
+      const tableListMatch = tableGroup.match(/\{\s*([\s\S]*?)\s*(?:Note:|$)/);
+      if (!tableListMatch) return tableGroup;
+
+      const tableListContent = tableListMatch[1];
+      // Extract table names - they can be comma-separated, space-separated, or on separate lines
+      const existingTables = tableListContent
+        .split(/[,\s\n]+/)
+        .map(t => t.trim())
+        .filter(t => t && !t.startsWith('Note'));
+
+      // Keep only tables that still exist in addedTables, and add only newly created/modified tables
+      const tablesStillInSchema = existingTables.filter(t => addedTables.has(t));
+
+      // Only add tables that are newly created (newTables) or modified (newFields), not original tables
+      const createdOrModifiedTables = new Set([
+        ...Object.keys(editedChanges.newTables),
+        ...Object.keys(editedChanges.newFields),
+      ]);
+      const newTablesToAdd = Array.from(createdOrModifiedTables).filter(t => !existingTables.includes(t));
+      const allTables = [...new Set([...tablesStillInSchema, ...newTablesToAdd])];
+
+      const removedTables = existingTables.filter(t => !addedTables.has(t));
+      console.log(`📦 Updating TableGroup:`);
+      console.log(`   Removed tables: ${removedTables.length > 0 ? removedTables.join(', ') : 'none'}`);
+      console.log(`   Added new tables: ${newTablesToAdd.length > 0 ? newTablesToAdd.join(', ') : 'none'}`);
+      console.log(`   Tables still in schema: ${tablesStillInSchema.join(', ')}`);
+      console.log(`   All tables now: ${allTables.join(', ')}`);
+
+      // Rebuild the TableGroup with updated table list (one per line)
+      const noteMatch = tableGroup.match(/Note:\s*'''([\s\S]*?)'''/);
+      const noteContent = noteMatch ? noteMatch[1] : '';
+      const headerMatch = tableGroup.match(/^(TableGroup\s+"[^"]+"\s*(?:\[[^\]]+\])*)\s*\{/);
+      const header = headerMatch ? headerMatch[1] : 'TableGroup "Feature"';
+
+      let updatedGroup = `${header} {\n`;
+      // Add each table on its own line
+      allTables.forEach(table => {
+        updatedGroup += `  ${table}\n`;
+      });
+      if (noteContent) {
+        updatedGroup += `  Note: '''${noteContent}'''\n`;
+      }
+      updatedGroup += '}';
+
+      return updatedGroup;
+    });
+  }
+
+  // Always include Refs and TableGroups if they exist, even if no tables were added
+  let result = dbmlParts.join('\n\n');
+  if (allRefs.length > 0) {
+    result = result ? `${result}\n\n${allRefs.join('\n')}` : allRefs.join('\n');
+  }
+  if (tableGroups.length > 0) {
+    result = result ? `${result}\n\n${tableGroups.join('\n\n')}` : tableGroups.join('\n\n');
+  }
+
+  console.log('✓ Final DBML length:', result.length);
+  console.log('✓ Has Ref statements:', result.includes('Ref:'));
+  console.log('✓ Has TableGroup statements:', result.includes('TableGroup'));
+  console.log('=== convertChangesToDbml END ===');
+
+  return result;
+}
+
+function generateTableDbml(
+  tableName: string,
+  fields: TableField[],
+  tableDescription?: string
+): string {
+  // Quote table names that contain spaces
+  const quotedTableName = tableName.includes(' ') ? `"${tableName}"` : tableName;
+  let dbml = `Table ${quotedTableName} {\n`;
+
+  if (tableDescription) {
+    dbml += `  Note: "${tableDescription}"\n`;
+  }
+
+  for (const field of fields) {
+    // Skip fields with missing name or type
+    if (!field.name?.trim() || !field.type?.trim()) {
+      console.log(`⏭️ Skipping field - name: "${field.name}" type: "${field.type}"`);
+      continue;
+    }
+
+    let fieldName = field.name.trim();
+    let fieldType = field.type.trim();
+
+    console.log(`📝 Processing field: ${fieldName} type: ${fieldType} desc: ${field.description || ''}`);
+
+    // Extract existing brackets from type
+    const bracketMatch = fieldType.match(/^(.*?)((\s*\[[^\]]*\])*)$/);
+    let typeWithoutBrackets = bracketMatch?.[1]?.trim() || fieldType;
+    let existingBrackets = (bracketMatch?.[2] || '').trim();
+
+    // Start building the field definition
+    let fieldDef = `  ${fieldName} ${typeWithoutBrackets}`;
+
+    // Collect all constraints that should go in brackets
+    const constraints: string[] = [];
+
+    // Add primary key constraint if needed
+    if (fieldName === 'id' && !existingBrackets.includes('primary key')) {
+      constraints.push('primary key');
+    }
+
+    // Parse existing constraints from brackets
+    if (existingBrackets) {
+      const innerContent = existingBrackets.match(/\[([^\]]*)\]/g);
+      if (innerContent) {
+        innerContent.forEach(bracket => {
+          const content = bracket.slice(1, -1); // Remove [ ]
+          if (content && !constraints.includes(content)) {
+            constraints.push(content);
+          }
+        });
+      }
+    }
+
+    // Add description as a note (but not for id/primary key fields)
+    // Only add if there isn't already a Note in the constraints
+    if (field.description?.trim() && fieldName !== 'id') {
+      const hasExistingNote = constraints.some(c => c.startsWith('Note:'));
+      if (!hasExistingNote) {
+        constraints.push(`Note: "${field.description.trim()}"`);
+      }
+    }
+
+    // Append all constraints in a single bracket section
+    if (constraints.length > 0) {
+      fieldDef += ` [${constraints.join(', ')}]`;
+    }
+
+    console.log(`  ✅ Generated: ${fieldDef}`);
+    dbml += fieldDef + '\n';
+  }
+
+  dbml += '}\n';
+  return dbml;
 }
 
 export default function Home() {
@@ -605,6 +996,8 @@ export default function Home() {
           proposedEmbedUrl: diagramData.embedUrl,
           activeView: "proposed",
           changes,
+          editedChanges: JSON.parse(JSON.stringify(changes)),
+          hasInlineEdits: false,
         },
       }));
     } catch (error) {
@@ -640,6 +1033,291 @@ export default function Home() {
       },
     }));
     setFeatureDescription("");
+  };
+
+  const handleTableNameChange = (
+    oldName: string,
+    newName: string,
+    section: 'newTables' | 'newFields'
+  ) => {
+    if (!newName.trim()) return;
+
+    setFetchState(prev => {
+      const sectionChanges = { ...prev.featurePlanning!.editedChanges![section] };
+      sectionChanges[newName] = sectionChanges[oldName];
+      delete sectionChanges[oldName];
+
+      // Also update table descriptions if the old name has a description
+      const tableDescriptions = { ...prev.featurePlanning!.editedChanges!.tableDescriptions };
+      if (tableDescriptions[oldName]) {
+        tableDescriptions[newName] = tableDescriptions[oldName];
+        delete tableDescriptions[oldName];
+      }
+
+      const editedChanges = {
+        ...prev.featurePlanning!.editedChanges!,
+        [section]: sectionChanges,
+        tableDescriptions,
+      };
+
+      // Update order array - replace oldName with newName at the same position
+      const orderKey = section === 'newTables' ? 'newTableOrder' : 'newFieldTableOrder';
+      const currentOrder = (prev.featurePlanning?.[orderKey as keyof typeof prev.featurePlanning] as string[] | undefined) || [];
+      const newOrder = currentOrder.map(t => t === oldName ? newName : t);
+
+      // Track the table name change in tableNameMap
+      const tableNameMap = { ...prev.featurePlanning?.tableNameMap };
+      tableNameMap[oldName] = newName;
+
+      return {
+        ...prev,
+        featurePlanning: {
+          ...prev.featurePlanning!,
+          editedChanges,
+          hasInlineEdits: true,
+          [orderKey]: newOrder,
+          tableNameMap,
+        },
+      };
+    });
+  };
+
+  const handleFieldChange = (
+    tableName: string,
+    fieldIndex: number,
+    property: 'name' | 'type' | 'description',
+    value: string,
+    section: 'newTables' | 'newFields'
+  ) => {
+    setFetchState(prev => {
+      const fields = prev.featurePlanning!.editedChanges![section][tableName];
+      const updatedFields = fields.map((field, idx) =>
+        idx === fieldIndex ? { ...field, [property]: value } : field
+      );
+
+      const editedChanges = {
+        ...prev.featurePlanning!.editedChanges!,
+        [section]: {
+          ...prev.featurePlanning!.editedChanges![section],
+          [tableName]: updatedFields,
+        },
+      };
+
+      return {
+        ...prev,
+        featurePlanning: {
+          ...prev.featurePlanning!,
+          editedChanges,
+          hasInlineEdits: true,
+        },
+      };
+    });
+  };
+
+  const handleDeleteField = (
+    tableName: string,
+    fieldIndex: number,
+    section: 'newTables' | 'newFields'
+  ) => {
+    setFetchState(prev => {
+      const fields = prev.featurePlanning!.editedChanges![section][tableName];
+      const updatedFields = fields.filter((_, idx) => idx !== fieldIndex);
+
+      const sectionChanges = { ...prev.featurePlanning!.editedChanges![section] };
+
+      if (updatedFields.length === 0) {
+        delete sectionChanges[tableName];
+      } else {
+        sectionChanges[tableName] = updatedFields;
+      }
+
+      const editedChanges = {
+        ...prev.featurePlanning!.editedChanges!,
+        [section]: sectionChanges,
+      };
+
+      return {
+        ...prev,
+        featurePlanning: {
+          ...prev.featurePlanning!,
+          editedChanges,
+          hasInlineEdits: true,
+        },
+      };
+    });
+  };
+
+  const handleDeleteTable = (
+    tableName: string,
+    section: 'newTables' | 'newFields'
+  ) => {
+    setFetchState(prev => {
+      const sectionChanges = { ...prev.featurePlanning!.editedChanges![section] };
+      delete sectionChanges[tableName];
+
+      const editedChanges = {
+        ...prev.featurePlanning!.editedChanges!,
+        [section]: sectionChanges,
+      };
+
+      // Also remove from expandedSchemaTables
+      const newExpanded = new Set(expandedSchemaTables);
+      newExpanded.delete(tableName);
+      setExpandedSchemaTables(newExpanded);
+
+      // Remove from order array
+      const orderKey = section === 'newTables' ? 'newTableOrder' : 'newFieldTableOrder';
+      const currentOrder = (prev.featurePlanning?.[orderKey as keyof typeof prev.featurePlanning] as string[] | undefined) || [];
+      const newOrder = currentOrder.filter(t => t !== tableName);
+
+      return {
+        ...prev,
+        featurePlanning: {
+          ...prev.featurePlanning!,
+          editedChanges,
+          hasInlineEdits: true,
+          [orderKey]: newOrder,
+        },
+      };
+    });
+  };
+
+  const handleAddField = (
+    tableName: string,
+    section: 'newTables' | 'newFields'
+  ) => {
+    setFetchState(prev => {
+      const editedChanges = {
+        ...prev.featurePlanning!.editedChanges!,
+        [section]: {
+          ...prev.featurePlanning!.editedChanges![section],
+          [tableName]: [
+            ...prev.featurePlanning!.editedChanges![section][tableName],
+            { name: 'new_field', type: 'text', description: '' },
+          ],
+        },
+      };
+
+      return {
+        ...prev,
+        featurePlanning: {
+          ...prev.featurePlanning!,
+          editedChanges,
+          hasInlineEdits: true,
+        },
+      };
+    });
+  };
+
+  const handleAddTable = () => {
+    let finalName = 'new_table';
+    const newTableName = 'new_table';
+    let counter = 1;
+
+    setFetchState(prev => {
+      const currentNewTables = prev.featurePlanning!.editedChanges!.newTables;
+
+      // Find a unique name
+      while (currentNewTables[finalName]) {
+        finalName = `${newTableName}_${counter}`;
+        counter++;
+      }
+
+      const editedChanges = {
+        ...prev.featurePlanning!.editedChanges!,
+        newTables: {
+          ...currentNewTables,
+          [finalName]: [
+            { name: 'id', type: 'unique', description: 'Primary key' },
+          ],
+        },
+      };
+
+      const newTableOrder = [...(prev.featurePlanning?.newTableOrder || []), finalName];
+
+      return {
+        ...prev,
+        featurePlanning: {
+          ...prev.featurePlanning!,
+          editedChanges,
+          hasInlineEdits: true,
+          newTableOrder,
+        },
+      };
+    });
+
+    setExpandedSchemaTables(prev => new Set([...prev, finalName]));
+  };
+
+  const handleUpdateDiagram = async () => {
+    try {
+      setFetchState(prev => ({
+        ...prev,
+        featurePlanning: {
+          ...prev.featurePlanning!,
+          status: 'generating',
+        },
+      }));
+
+      console.log('\n🔄 === HANDLE UPDATE DIAGRAM START ===');
+      console.log('Current editedChanges:', fetchState.featurePlanning!.editedChanges);
+
+      // Convert edited changes back to DBML using JavaScript logic
+      // Use pre-feature schema to know which tables are original, and current generated schema to preserve structure/Refs/TableGroups
+      const updatedDbml = convertChangesToDbml(
+        fetchState.featurePlanning!.originalDbml || '',
+        fetchState.featurePlanning!.generatedDbml || '',
+        fetchState.featurePlanning!.editedChanges!,
+        fetchState.featurePlanning!.tableNameMap
+      );
+
+      // Convert to Bubble types for the diagram API
+      const updatedDbmlWithBubbleTypes = convertDbmlToBubbleTypes(updatedDbml);
+
+      console.log('📊 Generated DBML:');
+      console.log('  Length:', updatedDbml.length);
+      console.log('  Full content:');
+      console.log(updatedDbml);
+      console.log('  With Bubble types:');
+      console.log(updatedDbmlWithBubbleTypes);
+
+      // Generate diagram
+      const diagramResponse = await fetch('/api/diagram', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dbml: updatedDbmlWithBubbleTypes }),
+      });
+
+      if (!diagramResponse.ok) {
+        const error = await diagramResponse.json();
+        throw new Error(error.error || 'Failed to generate diagram');
+      }
+
+      const diagramData = await diagramResponse.json();
+
+      setFetchState(prev => ({
+        ...prev,
+        successMessage: 'Diagram updated!',
+        featurePlanning: {
+          ...prev.featurePlanning!,
+          status: 'success',
+          generatedDbml: updatedDbml,
+          proposedEmbedUrl: diagramData.embedUrl,
+          hasInlineEdits: false,
+        },
+      }));
+    } catch (error) {
+      console.error('Error updating diagram:', error);
+      setFetchState(prev => ({
+        ...prev,
+        error: error instanceof Error ? error.message : 'Failed to update diagram',
+        status: 'error',
+        featurePlanning: {
+          ...prev.featurePlanning!,
+          status: 'success',
+        },
+      }));
+    }
   };
 
   return (
@@ -1063,29 +1741,47 @@ export default function Home() {
                     {fetchState.featurePlanning?.status === "success" && (
                       <div className="flex-1 flex flex-col space-y-3 overflow-y-auto">
                         {/* Changes Summary */}
-                        {fetchState.featurePlanning!.changes && (Object.keys(fetchState.featurePlanning!.changes.newTables).length > 0 || Object.keys(fetchState.featurePlanning!.changes.newFields).length > 0) && (
+                        {fetchState.featurePlanning!.editedChanges && (Object.keys(fetchState.featurePlanning!.editedChanges.newTables).length > 0 || Object.keys(fetchState.featurePlanning!.editedChanges.newFields).length > 0) && (
                           <div className="bg-orange-50 border border-orange-200 rounded-lg p-2.5 space-y-2">
                             <p className="text-xs font-bold text-orange-900 px-1">Schema Changes</p>
 
-                            {Object.keys(fetchState.featurePlanning!.changes!.newTables).length > 0 && (
+                            {Object.keys(fetchState.featurePlanning!.editedChanges!.newTables).length > 0 && (
                               <div className="space-y-1">
                                 <p className="text-xs font-semibold text-orange-800 px-1">New Tables</p>
-                                {Object.entries(fetchState.featurePlanning!.changes!.newTables).map(([tableName, fields]) => (
-                                  <div key={tableName} className="bg-white border border-orange-200 rounded overflow-hidden">
-                                    <button
-                                      onClick={() => toggleSchemaTable(tableName)}
-                                      className="w-full px-2 py-1 bg-orange-100 border-b border-orange-200 hover:bg-orange-150 transition-colors flex items-start gap-2 text-left"
-                                    >
-                                      <span className="text-orange-700 font-semibold text-xs mt-0.5 min-w-3">
-                                        {isSchemaTableExpanded(tableName) ? "▼" : "►"}
-                                      </span>
-                                      <div className="flex-1">
-                                        <p className="text-xs font-bold text-orange-900">{tableName}</p>
-                                        {fetchState.featurePlanning!.changes!.tableDescriptions?.[tableName] && (
-                                          <p className="text-xs text-orange-700 italic mt-0.5 leading-tight">{fetchState.featurePlanning!.changes!.tableDescriptions[tableName]}</p>
-                                        )}
-                                      </div>
-                                    </button>
+                                {(fetchState.featurePlanning?.newTableOrder?.length ? fetchState.featurePlanning.newTableOrder : Object.keys(fetchState.featurePlanning!.editedChanges!.newTables)).map((tableName, index) => {
+                                  const fields = fetchState.featurePlanning!.editedChanges!.newTables[tableName];
+                                  if (!fields) return null;
+                                  return (
+                                  <div key={`newTable-${index}`} className="bg-white border border-orange-200 rounded overflow-hidden">
+                                    <div className="w-full px-2 py-1 bg-orange-100 border-b border-orange-200 hover:bg-orange-150 transition-colors flex items-start gap-2">
+                                      <button
+                                        onClick={() => toggleSchemaTable(tableName)}
+                                        className="flex-1 flex items-start gap-2 text-left"
+                                      >
+                                        <span className="text-orange-700 font-semibold text-xs mt-0.5 min-w-3">
+                                          {isSchemaTableExpanded(tableName) ? "▼" : "►"}
+                                        </span>
+                                        <div className="flex-1">
+                                          <input
+                                            type="text"
+                                            value={tableName}
+                                            onChange={(e) => handleTableNameChange(tableName, e.target.value, 'newTables')}
+                                            onClick={(e) => e.stopPropagation()}
+                                            className="text-xs font-bold text-orange-900 bg-transparent border-b border-transparent hover:border-orange-400 focus:border-orange-500 focus:outline-none px-1"
+                                          />
+                                          {fetchState.featurePlanning!.editedChanges!.tableDescriptions?.[tableName] && (
+                                            <p className="text-xs text-orange-700 italic mt-0.5 leading-tight">{fetchState.featurePlanning!.editedChanges!.tableDescriptions[tableName]}</p>
+                                          )}
+                                        </div>
+                                      </button>
+                                      <button
+                                        onClick={() => handleDeleteTable(tableName, 'newTables')}
+                                        className="text-red-500 hover:text-red-700 text-xs flex-shrink-0"
+                                        title="Delete table"
+                                      >
+                                        🗑️
+                                      </button>
+                                    </div>
                                     {isSchemaTableExpanded(tableName) && (
                                       <table className="w-full text-xs border-collapse">
                                         <thead>
@@ -1093,43 +1789,136 @@ export default function Home() {
                                             <th className="text-left px-2 py-1 font-bold text-orange-900 text-xs w-2/5">Column</th>
                                             <th className="text-left px-2 py-1 font-bold text-orange-900 text-xs w-1/5">Type</th>
                                             <th className="text-left px-2 py-1 font-bold text-orange-900 text-xs w-2/5">Description</th>
+                                            <th className="text-left px-2 py-1 font-bold text-orange-900 text-xs w-10">Actions</th>
                                           </tr>
                                         </thead>
                                         <tbody>
-                                          {fields.map((field) => (
-                                            <tr key={`${tableName}-${field.name}`} className="border-b border-orange-100 hover:bg-orange-50 transition-colors">
-                                              <td className="px-2 py-1 font-semibold text-orange-800 break-words text-xs">{field.name}</td>
-                                              <td className="px-2 py-1 text-orange-700 break-words text-xs">{field.type}</td>
-                                              <td className="px-2 py-1 text-orange-600 italic break-words text-xs line-clamp-2">{field.description || "-"}</td>
+                                          {fields.map((field, fieldIndex) => (
+                                            <tr key={`${tableName}-${fieldIndex}`} className="border-b border-orange-100 hover:bg-orange-50 transition-colors">
+                                              <td className="px-2 py-1">
+                                                <input
+                                                  type="text"
+                                                  value={field.name}
+                                                  onChange={(e) => handleFieldChange(tableName, fieldIndex, 'name', e.target.value, 'newTables')}
+                                                  className="w-full font-semibold text-orange-800 text-xs bg-transparent border-b border-transparent hover:border-orange-300 focus:border-orange-500 focus:outline-none"
+                                                />
+                                              </td>
+                                              <td className="px-2 py-1">
+                                                <select
+                                                  value={field.type}
+                                                  onChange={(e) => handleFieldChange(tableName, fieldIndex, 'type', e.target.value, 'newTables')}
+                                                  className="w-full text-orange-700 text-xs bg-white border border-orange-300 rounded px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-orange-500"
+                                                >
+                                                  <option value="">Select type</option>
+                                                  <optgroup label="Data Types">
+                                                    <option value="text">text</option>
+                                                    <option value="number">number</option>
+                                                    <option value="Y_N">Y_N</option>
+                                                    <option value="date">date</option>
+                                                    <option value="unique">unique</option>
+                                                  </optgroup>
+                                                  <optgroup label="Tables">
+                                                    {Array.from(
+                                                      new Set([
+                                                        ...Object.keys(fetchState.featurePlanning?.editedChanges?.newTables || {}),
+                                                        ...Object.keys(fetchState.featurePlanning?.editedChanges?.newFields || {}),
+                                                        ...(fetchState.data ? Object.keys(parseDbml(fetchState.data).tables) : []),
+                                                      ])
+                                                    )
+                                                      .filter(t => t !== tableName)
+                                                      .sort()
+                                                      .map(table => (
+                                                        <option key={table} value={table}>
+                                                          {table}
+                                                        </option>
+                                                      ))}
+                                                  </optgroup>
+                                                </select>
+                                              </td>
+                                              <td className="px-2 py-1">
+                                                <input
+                                                  type="text"
+                                                  value={field.description || ""}
+                                                  placeholder="-"
+                                                  onChange={(e) => handleFieldChange(tableName, fieldIndex, 'description', e.target.value, 'newTables')}
+                                                  className="w-full text-orange-600 italic text-xs bg-transparent border-b border-transparent hover:border-orange-300 focus:border-orange-500 focus:outline-none"
+                                                />
+                                              </td>
+                                              <td className="px-2 py-1">
+                                                <button
+                                                  onClick={() => handleDeleteField(tableName, fieldIndex, 'newTables')}
+                                                  className="text-red-500 hover:text-red-700 text-xs"
+                                                  title="Delete field"
+                                                >
+                                                  🗑️
+                                                </button>
+                                              </td>
                                             </tr>
                                           ))}
                                         </tbody>
+                                        <tfoot>
+                                          <tr>
+                                            <td colSpan={4} className="px-2 py-1">
+                                              <button
+                                                onClick={() => handleAddField(tableName, 'newTables')}
+                                                className="w-full text-xs text-orange-600 hover:text-orange-800 py-1 flex items-center justify-center gap-1"
+                                              >
+                                                <span>+</span> Add Column
+                                              </button>
+                                            </td>
+                                          </tr>
+                                        </tfoot>
                                       </table>
                                     )}
                                   </div>
-                                ))}
+                                  );
+                                })}
+                                <button
+                                  onClick={handleAddTable}
+                                  className="w-full mt-2 px-3 py-2 bg-orange-100 text-orange-800 text-xs font-medium rounded-lg hover:bg-orange-200 transition-colors flex items-center justify-center gap-1"
+                                >
+                                  <span>+</span> Add Table
+                                </button>
                               </div>
                             )}
 
-                            {Object.keys(fetchState.featurePlanning!.changes!.newFields).length > 0 && (
+                            {Object.keys(fetchState.featurePlanning!.editedChanges!.newFields).length > 0 && (
                               <div className="space-y-1 pt-1">
                                 <p className="text-xs font-semibold text-orange-800 px-1">Modified Tables</p>
-                                {Object.entries(fetchState.featurePlanning!.changes!.newFields).map(([tableName, fields]) => (
-                                  <div key={tableName} className="bg-white border border-orange-200 rounded overflow-hidden">
-                                    <button
-                                      onClick={() => toggleSchemaTable(tableName)}
-                                      className="w-full px-2 py-1 bg-orange-100 border-b border-orange-200 hover:bg-orange-150 transition-colors flex items-start gap-2 text-left"
-                                    >
-                                      <span className="text-orange-700 font-semibold text-xs mt-0.5 min-w-3">
-                                        {isSchemaTableExpanded(tableName) ? "▼" : "►"}
-                                      </span>
-                                      <div className="flex-1">
-                                        <p className="text-xs font-bold text-orange-900">{tableName}</p>
-                                        {fetchState.featurePlanning!.changes!.tableDescriptions?.[tableName] && (
-                                          <p className="text-xs text-orange-700 italic mt-0.5 leading-tight">{fetchState.featurePlanning!.changes!.tableDescriptions[tableName]}</p>
-                                        )}
-                                      </div>
-                                    </button>
+                                {(fetchState.featurePlanning?.newFieldTableOrder?.length ? fetchState.featurePlanning.newFieldTableOrder : Object.keys(fetchState.featurePlanning!.editedChanges!.newFields)).map((tableName, index) => {
+                                  const fields = fetchState.featurePlanning!.editedChanges!.newFields[tableName];
+                                  if (!fields) return null;
+                                  return (
+                                  <div key={`newField-${index}`} className="bg-white border border-orange-200 rounded overflow-hidden">
+                                    <div className="w-full px-2 py-1 bg-orange-100 border-b border-orange-200 hover:bg-orange-150 transition-colors flex items-start gap-2">
+                                      <button
+                                        onClick={() => toggleSchemaTable(tableName)}
+                                        className="flex-1 flex items-start gap-2 text-left"
+                                      >
+                                        <span className="text-orange-700 font-semibold text-xs mt-0.5 min-w-3">
+                                          {isSchemaTableExpanded(tableName) ? "▼" : "►"}
+                                        </span>
+                                        <div className="flex-1">
+                                          <input
+                                            type="text"
+                                            value={tableName}
+                                            onChange={(e) => handleTableNameChange(tableName, e.target.value, 'newFields')}
+                                            onClick={(e) => e.stopPropagation()}
+                                            className="text-xs font-bold text-orange-900 bg-transparent border-b border-transparent hover:border-orange-400 focus:border-orange-500 focus:outline-none px-1"
+                                          />
+                                          {fetchState.featurePlanning!.editedChanges!.tableDescriptions?.[tableName] && (
+                                            <p className="text-xs text-orange-700 italic mt-0.5 leading-tight">{fetchState.featurePlanning!.editedChanges!.tableDescriptions[tableName]}</p>
+                                          )}
+                                        </div>
+                                      </button>
+                                      <button
+                                        onClick={() => handleDeleteTable(tableName, 'newFields')}
+                                        className="text-red-500 hover:text-red-700 text-xs flex-shrink-0"
+                                        title="Delete table"
+                                      >
+                                        🗑️
+                                      </button>
+                                    </div>
                                     {isSchemaTableExpanded(tableName) && (
                                       <table className="w-full text-xs border-collapse">
                                         <thead>
@@ -1137,24 +1926,102 @@ export default function Home() {
                                             <th className="text-left px-2 py-1 font-bold text-orange-900 text-xs w-2/5">Column</th>
                                             <th className="text-left px-2 py-1 font-bold text-orange-900 text-xs w-1/5">Type</th>
                                             <th className="text-left px-2 py-1 font-bold text-orange-900 text-xs w-2/5">Description</th>
+                                            <th className="text-left px-2 py-1 font-bold text-orange-900 text-xs w-10">Actions</th>
                                           </tr>
                                         </thead>
                                         <tbody>
-                                          {fields.map((field) => (
-                                            <tr key={`${tableName}-${field.name}`} className="border-b border-orange-100 hover:bg-orange-50 transition-colors">
-                                              <td className="px-2 py-1 font-semibold text-orange-800 break-words text-xs">{field.name}</td>
-                                              <td className="px-2 py-1 text-orange-700 break-words text-xs">{field.type}</td>
-                                              <td className="px-2 py-1 text-orange-600 italic break-words text-xs line-clamp-2">{field.description || "-"}</td>
+                                          {fields.map((field, fieldIndex) => (
+                                            <tr key={`${tableName}-newFields-${fieldIndex}`} className="border-b border-orange-100 hover:bg-orange-50 transition-colors">
+                                              <td className="px-2 py-1">
+                                                <input
+                                                  type="text"
+                                                  value={field.name}
+                                                  onChange={(e) => handleFieldChange(tableName, fieldIndex, 'name', e.target.value, 'newFields')}
+                                                  className="w-full font-semibold text-orange-800 text-xs bg-transparent border-b border-transparent hover:border-orange-300 focus:border-orange-500 focus:outline-none"
+                                                />
+                                              </td>
+                                              <td className="px-2 py-1">
+                                                <select
+                                                  value={field.type}
+                                                  onChange={(e) => handleFieldChange(tableName, fieldIndex, 'type', e.target.value, 'newFields')}
+                                                  className="w-full text-orange-700 text-xs bg-white border border-orange-300 rounded px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-orange-500"
+                                                >
+                                                  <option value="">Select type</option>
+                                                  <optgroup label="Data Types">
+                                                    <option value="text">text</option>
+                                                    <option value="number">number</option>
+                                                    <option value="Y_N">Y_N</option>
+                                                    <option value="date">date</option>
+                                                    <option value="unique">unique</option>
+                                                  </optgroup>
+                                                  <optgroup label="Tables">
+                                                    {Array.from(
+                                                      new Set([
+                                                        ...Object.keys(fetchState.featurePlanning?.editedChanges?.newTables || {}),
+                                                        ...Object.keys(fetchState.featurePlanning?.editedChanges?.newFields || {}),
+                                                        ...(fetchState.data ? Object.keys(parseDbml(fetchState.data).tables) : []),
+                                                      ])
+                                                    )
+                                                      .filter(t => t !== tableName)
+                                                      .sort()
+                                                      .map(table => (
+                                                        <option key={table} value={table}>
+                                                          {table}
+                                                        </option>
+                                                      ))}
+                                                  </optgroup>
+                                                </select>
+                                              </td>
+                                              <td className="px-2 py-1">
+                                                <input
+                                                  type="text"
+                                                  value={field.description || ""}
+                                                  placeholder="-"
+                                                  onChange={(e) => handleFieldChange(tableName, fieldIndex, 'description', e.target.value, 'newFields')}
+                                                  className="w-full text-orange-600 italic text-xs bg-transparent border-b border-transparent hover:border-orange-300 focus:border-orange-500 focus:outline-none"
+                                                />
+                                              </td>
+                                              <td className="px-2 py-1">
+                                                <button
+                                                  onClick={() => handleDeleteField(tableName, fieldIndex, 'newFields')}
+                                                  className="text-red-500 hover:text-red-700 text-xs"
+                                                  title="Delete field"
+                                                >
+                                                  🗑️
+                                                </button>
+                                              </td>
                                             </tr>
                                           ))}
                                         </tbody>
+                                        <tfoot>
+                                          <tr>
+                                            <td colSpan={4} className="px-2 py-1">
+                                              <button
+                                                onClick={() => handleAddField(tableName, 'newFields')}
+                                                className="w-full text-xs text-orange-600 hover:text-orange-800 py-1 flex items-center justify-center gap-1"
+                                              >
+                                                <span>+</span> Add Column
+                                              </button>
+                                            </td>
+                                          </tr>
+                                        </tfoot>
                                       </table>
                                     )}
                                   </div>
-                                ))}
+                                  );
+                                })}
                               </div>
                             )}
                           </div>
+                        )}
+
+                        {fetchState.featurePlanning?.hasInlineEdits && (
+                          <button
+                            onClick={handleUpdateDiagram}
+                            className="w-full mt-3 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors"
+                          >
+                            Update Diagram
+                          </button>
                         )}
 
                         {/* Edit Schema Section */}
@@ -1227,7 +2094,10 @@ export default function Home() {
                                     ...prev.featurePlanning!,
                                     generatedDbml: editData.updatedDbml,
                                     proposedEmbedUrl: newEmbedUrl,
+                                    activeView: "proposed",
                                     changes,
+                                    editedChanges: JSON.parse(JSON.stringify(changes)),
+                                    hasInlineEdits: false,
                                   },
                                 }));
 
