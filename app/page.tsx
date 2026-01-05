@@ -505,8 +505,7 @@ export default function Home() {
     setFetchState(prev => ({
       ...prev,
       featurePlanning: {
-        status: "planning",
-        activeView: "current",
+        status: "idle",
       },
     }));
     setFeatureDescription("");
@@ -893,39 +892,51 @@ export default function Home() {
                   {/* Diagram Section */}
                   <div className="flex-1 flex flex-col min-w-0">
                     {/* Back Button and Current/Proposed Tabs */}
-                    <div className="flex gap-2 mb-3 w-fit items-center">
-                      <button
-                        onClick={() => setFetchState({ status: "idle" })}
-                        className="flex items-center justify-center w-10 h-10 rounded-lg bg-white border-2 border-orange-500 hover:bg-orange-50 transition-colors flex-shrink-0"
-                        aria-label="Go back"
-                      >
-                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-orange-500">
-                          <polyline points="15 18 9 12 15 6"></polyline>
-                        </svg>
-                      </button>
+                    <div className="flex gap-2 mb-3 justify-between items-center">
+                      <div className="flex gap-2 w-fit items-center">
+                        <button
+                          onClick={() => setFetchState({ status: "idle" })}
+                          className="flex items-center justify-center w-10 h-10 rounded-lg bg-white border-2 border-orange-500 hover:bg-orange-50 transition-colors flex-shrink-0"
+                          aria-label="Go back"
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-orange-500">
+                            <polyline points="15 18 9 12 15 6"></polyline>
+                          </svg>
+                        </button>
+                        {fetchState.featurePlanning?.status === "success" && (
+                          <>
+                            <button
+                              onClick={() => handleToggleView("current")}
+                              className={`px-3 py-2 text-xs font-medium rounded-lg transition-colors ${
+                                fetchState.featurePlanning.activeView === "current"
+                                  ? "bg-zinc-900 text-white"
+                                  : "bg-zinc-100 text-zinc-700 hover:bg-zinc-200"
+                              }`}
+                            >
+                              Current
+                            </button>
+                            <button
+                              onClick={() => handleToggleView("proposed")}
+                              className={`px-3 py-2 text-xs font-medium rounded-lg transition-colors ${
+                                fetchState.featurePlanning.activeView === "proposed"
+                                  ? "bg-zinc-900 text-white"
+                                  : "bg-zinc-100 text-zinc-700 hover:bg-zinc-200"
+                              }`}
+                            >
+                              {fetchState.featurePlanning.featureTitle || "Proposed"}
+                            </button>
+                          </>
+                        )}
+                      </div>
+
+                      {/* Plan Another Button - Top Right */}
                       {fetchState.featurePlanning?.status === "success" && (
-                        <>
-                          <button
-                            onClick={() => handleToggleView("current")}
-                            className={`px-3 py-2 text-xs font-medium rounded-lg transition-colors ${
-                              fetchState.featurePlanning.activeView === "current"
-                                ? "bg-zinc-900 text-white"
-                                : "bg-zinc-100 text-zinc-700 hover:bg-zinc-200"
-                            }`}
-                          >
-                            Current
-                          </button>
-                          <button
-                            onClick={() => handleToggleView("proposed")}
-                            className={`px-3 py-2 text-xs font-medium rounded-lg transition-colors ${
-                              fetchState.featurePlanning.activeView === "proposed"
-                                ? "bg-zinc-900 text-white"
-                                : "bg-zinc-100 text-zinc-700 hover:bg-zinc-200"
-                            }`}
-                          >
-                            {fetchState.featurePlanning.featureTitle || "Proposed"}
-                          </button>
-                        </>
+                        <button
+                          onClick={handlePlanFeature}
+                          className="px-4 py-2 bg-zinc-900 text-white text-xs font-medium rounded-lg hover:bg-zinc-800 transition-colors flex-shrink-0"
+                        >
+                          + Plan Feature
+                        </button>
                       )}
                     </div>
 
@@ -995,21 +1006,6 @@ export default function Home() {
 
                     {/* Idle State */}
                     {!fetchState.featurePlanning || fetchState.featurePlanning.status === "idle" ? (
-                      <div className="flex-1 flex flex-col justify-between">
-                        <div className="space-y-3">
-                          <p className="text-sm text-zinc-700 leading-relaxed">Let our AI plan new features and restructure your database</p>
-                          <button
-                            onClick={handlePlanFeature}
-                            className="w-full px-4 py-2 bg-zinc-900 text-white text-sm font-medium rounded-lg hover:bg-zinc-800 transition-colors"
-                          >
-                            Plan a Feature
-                          </button>
-                        </div>
-                      </div>
-                    ) : null}
-
-                    {/* Planning State */}
-                    {fetchState.featurePlanning?.status === "planning" && (
                       <div className="flex-1 flex flex-col space-y-3">
                         <div className="bg-blue-50 border border-blue-200 rounded p-3 mb-2">
                           <p className="text-xs text-blue-800">
@@ -1029,14 +1025,10 @@ export default function Home() {
                         >
                           Generate Schema
                         </button>
-                        <button
-                          onClick={handleClosePlanning}
-                          className="w-full px-4 py-2 bg-zinc-100 text-zinc-700 text-sm font-medium rounded-lg hover:bg-zinc-200 transition-colors"
-                        >
-                          Cancel
-                        </button>
                       </div>
-                    )}
+                    ) : null}
+
+                    {/* Planning State - Not used since we show input in Idle */}
 
                     {/* Generating State */}
                     {fetchState.featurePlanning?.status === "generating" && (
@@ -1151,13 +1143,6 @@ export default function Home() {
                             )}
                           </div>
                         )}
-
-                        <button
-                          onClick={handlePlanFeature}
-                          className="w-full px-4 py-2 bg-zinc-900 text-white text-sm font-medium rounded-lg hover:bg-zinc-800 transition-colors"
-                        >
-                          Plan Another
-                        </button>
 
                         {/* Edit Schema Section */}
                         <div className="border-t pt-4 space-y-2">
