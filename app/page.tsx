@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import ReactMarkdown from "react-markdown";
 
 interface TableField {
   name: string;
@@ -14,9 +15,109 @@ interface SchemaChange {
   tableDescriptions?: { [tableName: string]: string };
 }
 
+// Message structure for chat-based database queries
+interface ChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  timestamp: number;
+  schemaContext: "current" | "proposed";
+}
+
+// Message structure for table finder (identifying which tables are involved in features)
+interface TableFinderMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  timestamp: number;
+  tableGroups?: string[];
+  matchedTables?: string[];
+}
+
+function dedupDbml(dbml: string): string {
+  // Remove duplicate field definitions within tables and duplicate Ref statements
+  console.log('=== DEDUPLICATING DBML ===');
+  const lines = dbml.split('\n');
+  const processedLines: string[] = [];
+  let currentTable = '';
+  let seenFields = new Set<string>();
+  let seenRefs = new Set<string>();
+
+  for (const line of lines) {
+    // Track which table we're currently in
+    const tableMatch = line.match(/Table\s+(?:"([^"]+)"|(\w+))/);
+    if (tableMatch) {
+      currentTable = tableMatch[1] || tableMatch[2];
+      seenFields.clear();
+      processedLines.push(line);
+      continue;
+    }
+
+    // Check if we're exiting a table
+    if (line.trim() === '}') {
+      seenFields.clear();
+      processedLines.push(line);
+      continue;
+    }
+
+    // Check for duplicate field definitions within the current table
+    const fieldMatch = line.match(/^\s*(\w+)\s+\w+/);
+    if (fieldMatch && currentTable) {
+      const fieldName = fieldMatch[1];
+      if (seenFields.has(fieldName)) {
+        console.log(`Removing duplicate field '${fieldName}' from table '${currentTable}'`);
+        continue;
+      }
+      seenFields.add(fieldName);
+    }
+
+    // Check for duplicate Ref statements
+    const refMatch = line.match(/Ref:\s*([^\s.]+)\.(\w+)\s*([<>]|-)\s*([^\s.]+)\._id/);
+    if (refMatch) {
+      const refKey = `${refMatch[1]}.${refMatch[2]}-${refMatch[4]}._id`;
+      if (seenRefs.has(refKey)) {
+        console.log(`Removing duplicate Ref: ${line.trim()}`);
+        continue;
+      }
+      seenRefs.add(refKey);
+    }
+
+    processedLines.push(line);
+  }
+
+  return processedLines.join('\n');
+}
+
+// Generate a short summary from a question for tab titles
+// E.g., "Show me tables involved in managing PA availability" -> "PA availability"
+function generateSummaryFromQuestion(question: string): string {
+  // Remove common prefixes like "Show me", "What", "Which", "Tell me about"
+  let summary = question
+    .replace(/^(show me|what|which|tell me about|what are|which are|find|identify)\s+/i, '')
+    .replace(/\?$/, '') // Remove trailing question mark
+    .trim();
+
+  // Remove common phrases
+  summary = summary
+    .replace(/\s+(tables|involved in|are the|related to|for|in|the|that)\s+/gi, ' ')
+    .trim();
+
+  // Limit to reasonable length
+  if (summary.length > 40) {
+    summary = summary.substring(0, 40) + '...';
+  }
+
+  return summary || 'Tables';
+}
+
 function convertDbmlToBubbleTypes(dbml: string): string {
   // Replace DBML types with Bubble types in the entire DBML
   let converted = dbml;
+
+  // Handle inline Ref relationships: field_name text [ref: > table._id]
+  // Replace the field's type with the referenced table name
+  // Pattern: any word characters (field), any type, [ref: > table._id] -> replace type with table name
+  converted = converted.replace(/(\w+)\s+\w+\s+(\[ref:\s*>\s*(\w+)\.)/g, '$1 $3 $2');
 
   // Replace type declarations: field_name oldType -> field_name newType
   // Do numeric types first (more specific)
@@ -153,12 +254,16 @@ function analyzeChanges(
       }
     } else {
       // Check for new fields in existing table
+      // Only count fields that don't exist in current, ignoring formatting/constraint changes
       const currentFieldNames = new Set(current.tables[tableName].map(f => f.name));
       const proposedFieldNames = fields.map(f => f.name);
+
+      // Fields that are in proposed but not in current = truly new fields
       const added = fields.filter(f => !currentFieldNames.has(f.name));
 
-      console.log(`Table ${tableName}: current fields=${Array.from(currentFieldNames).join(',')}, proposed fields=${proposedFieldNames.join(',')}, added=${added.map(f => f.name).join(',')}`);
+      console.log(`Table ${tableName}: current fields=${Array.from(currentFieldNames).join(',')}, proposed fields=${proposedFieldNames.join(',')}, truly_added=${added.map(f => f.name).join(',')}`);
 
+      // Only mark as modified if there are truly new fields (not just reformatted existing ones)
       if (added.length > 0) {
         const fieldsWithDescriptions = added.map(field => {
           console.log(`  Added field: ${field.name}`);
@@ -175,6 +280,9 @@ function analyzeChanges(
         if (proposed.tableNotes[tableName]) {
           tableDescriptions[tableName] = proposed.tableNotes[tableName];
         }
+      } else {
+        // Table exists with same fields - no changes detected
+        console.log(`  Table ${tableName} has no new fields (existing fields may be reformatted but not modified)`);
       }
     }
   }
@@ -325,6 +433,30 @@ interface FetchState {
     newTableOrder?: string[];
     newFieldTableOrder?: string[];
     tableNameMap?: { [oldName: string]: string };
+  };
+  // State for chat-based database queries feature
+  chatWithDb?: {
+    status: "idle" | "chatting" | "error";
+    messages: ChatMessage[];
+    currentSchemaContext: "current" | "proposed" | null;
+    activeTab: "plan-feature" | "chat-db" | "table-finder";
+    error?: string;
+  };
+  // State for table finder feature (identifying tables involved in features)
+  tableFinder?: {
+    status: "idle" | "searching" | "success" | "error";
+    messages: TableFinderMessage[];
+    results: Array<{
+      id: string;
+      question: string;
+      summary: string;
+      matchedTables: string[];
+      embedUrl: string;
+      dbml: string;
+      explanation: string;
+    }>;
+    activeResultId?: string;
+    error?: string;
   };
 }
 
@@ -518,9 +650,15 @@ function convertChangesToDbml(
 
   // Generate new Refs from fields that reference tables by type
   const bubbleTypes = new Set(['text', 'number', 'Y_N', 'date', 'unique']);
+  // Normalize both _id and id to _id for consistent deduplication
   const existingRefSet = new Set(refs.map(r => {
     const match = r.match(/Ref:\s*([^\s.]+)\.(\w+)\s*([<>]|-)\s*([^\s.]+)\.(\w+)/);
-    return match ? `${match[1]}.${match[2]}-${match[4]}.${match[5]}` : '';
+    if (match) {
+      // Normalize target field to _id
+      const targetField = match[5] === 'id' ? '_id' : match[5];
+      return `${match[1]}.${match[2]}-${match[4]}.${targetField}`;
+    }
+    return '';
   }));
 
   // Check all fields in newTables and newFields for table references
@@ -535,12 +673,12 @@ function convertChangesToDbml(
       fieldType = tableNameMap?.[fieldType] || fieldType;
       // If the field type is a table name (not a bubble type) and the table exists
       if (fieldType && !bubbleTypes.has(fieldType) && addedTables.has(fieldType)) {
-        const refKey = `${tableName}.${field.name}-${fieldType}.id`;
+        const refKey = `${tableName}.${field.name}-${fieldType}._id`;
         // Only add if this Ref doesn't already exist
         if (!existingRefSet.has(refKey)) {
-          const refStatement = `Ref: ${tableName}.${field.name} > ${fieldType}.id`;
+          const refStatement = `Ref: ${tableName}.${field.name} > ${fieldType}._id`;
           autoGeneratedRefs.push(refStatement);
-          console.log(`🔗 Auto-generating Ref: ${tableName}.${field.name} > ${fieldType}.id`);
+          console.log(`🔗 Auto-generating Ref: ${tableName}.${field.name} > ${fieldType}._id`);
         }
       }
     }
@@ -555,12 +693,12 @@ function convertChangesToDbml(
       fieldType = tableNameMap?.[fieldType] || fieldType;
       // If the field type is a table name (not a bubble type) and the table exists
       if (fieldType && !bubbleTypes.has(fieldType) && addedTables.has(fieldType)) {
-        const refKey = `${tableName}.${field.name}-${fieldType}.id`;
+        const refKey = `${tableName}.${field.name}-${fieldType}._id`;
         // Only add if this Ref doesn't already exist
         if (!existingRefSet.has(refKey)) {
-          const refStatement = `Ref: ${tableName}.${field.name} > ${fieldType}.id`;
+          const refStatement = `Ref: ${tableName}.${field.name} > ${fieldType}._id`;
           autoGeneratedRefs.push(refStatement);
-          console.log(`🔗 Auto-generating Ref: ${tableName}.${field.name} > ${fieldType}.id`);
+          console.log(`🔗 Auto-generating Ref: ${tableName}.${field.name} > ${fieldType}._id`);
         }
       }
     }
@@ -642,9 +780,108 @@ function convertChangesToDbml(
   console.log('✓ Final DBML length:', result.length);
   console.log('✓ Has Ref statements:', result.includes('Ref:'));
   console.log('✓ Has TableGroup statements:', result.includes('TableGroup'));
+
+  // Remove any duplicate fields and references
+  const deduplicatedResult = dedupDbml(result);
+
   console.log('=== convertChangesToDbml END ===');
 
-  return result;
+  return deduplicatedResult;
+}
+
+function convertProposalToDbml(
+  generatedDbml: string,
+  editedChanges: SchemaChange,
+  tableNameMap?: { [oldName: string]: string }
+): string {
+  // Generate DBML containing ONLY the newly generated/modified tables (the proposal)
+  // This excludes original unmodified tables, so the edit-dbml API can't accidentally modify them
+  console.log('=== convertProposalToDbml START ===');
+  const dbmlParts: string[] = [];
+  const generated = parseDbml(generatedDbml);
+
+  // Helper function to check if a table would have any valid fields
+  const hasValidFields = (fields: any[]) => {
+    return fields.some(f => f.name?.trim() && f.type?.trim());
+  };
+
+  // Track which tables we've added
+  const addedTables = new Set<string>();
+
+  // Add tables from editedChanges.newTables (newly created tables)
+  for (const [tableName, fields] of Object.entries(editedChanges.newTables)) {
+    console.log(`📝 Adding new table "${tableName}" to proposal DBML: ${fields.length} fields`);
+    if (!tableName?.trim()) continue;
+    if (hasValidFields(fields)) {
+      // Update field types to reflect renamed tables
+      const updatedFields = fields.map(field => ({
+        ...field,
+        type: tableNameMap?.[field.type] || field.type,
+      }));
+      const description = editedChanges.tableDescriptions?.[tableName];
+      const generatedTable = generateTableDbml(tableName, updatedFields, description);
+      dbmlParts.push(generatedTable);
+      addedTables.add(tableName);
+    }
+  }
+
+  // Add modified existing tables (tables that got new fields added)
+  // Include the complete table from generated schema + the new fields
+  for (const [tableName, newFields] of Object.entries(editedChanges.newFields)) {
+    if (addedTables.has(tableName)) {
+      console.log(`⏭️ Skipping "${tableName}" - already added from newTables`);
+      continue;
+    }
+    console.log(`📝 Adding modified table "${tableName}" to proposal DBML: ${newFields.length} new fields`);
+
+    // Get the complete table from the generated schema (has both original and new fields from inline edits)
+    const generatedFields = generated.tables[tableName] || [];
+    const allFields = [...generatedFields, ...newFields];
+
+    // Update field types to reflect renamed tables
+    const updatedFields = allFields.map(field => ({
+      ...field,
+      type: tableNameMap?.[field.type] || field.type,
+    }));
+    if (hasValidFields(updatedFields)) {
+      const description = generated.tableNotes[tableName] || editedChanges.tableDescriptions?.[tableName];
+      const generatedTable = generateTableDbml(tableName, updatedFields, description);
+      dbmlParts.push(generatedTable);
+      addedTables.add(tableName);
+    }
+  }
+
+  // Extract Ref statements from the generated schema for the proposal tables
+  const refs: string[] = [];
+  const proposalTableSet = new Set([...addedTables]);
+
+  // Extract all Ref statements from generated DBML that involve proposal tables
+  const refRegex = /Ref:\s*([^\s.]+)\.(\w+)\s*([<>]|-)\s*([^\s.]+)\.(\w+)/g;
+  let refMatch;
+  const seenRefs = new Set<string>();
+
+  while ((refMatch = refRegex.exec(generatedDbml)) !== null) {
+    const sourceTable = refMatch[1];
+    const targetTable = refMatch[4];
+
+    // Include this ref if either table is in the proposal
+    if (proposalTableSet.has(sourceTable) || proposalTableSet.has(targetTable)) {
+      const refKey = `${sourceTable}.${refMatch[2]}-${targetTable}.${refMatch[5]}`;
+      if (!seenRefs.has(refKey)) {
+        const direction = refMatch[3];
+        refs.push(`Ref: ${sourceTable}.${refMatch[2]} ${direction} ${targetTable}.${refMatch[5]}`);
+        seenRefs.add(refKey);
+      }
+    }
+  }
+
+  const result = dbmlParts.join('\n\n');
+  if (refs.length > 0) {
+    return result ? `${result}\n\n${refs.join('\n')}` : refs.join('\n');
+  }
+
+  console.log('=== convertProposalToDbml END ===');
+  return dedupDbml(result);
 }
 
 function generateTableDbml(
@@ -841,6 +1078,19 @@ export default function Home() {
     }
   }, [fetchState.status]);
 
+  // Auto-scroll to bottom of chat when new messages arrive
+  useEffect(() => {
+    if (fetchState.chatWithDb?.messages.length && fetchState.chatWithDb.activeTab === "chat-db") {
+      const chatContainer = document.getElementById("chat-messages");
+      if (chatContainer) {
+        // Use setTimeout to ensure the DOM has updated before scrolling
+        setTimeout(() => {
+          chatContainer.scrollTop = chatContainer.scrollHeight;
+        }, 0);
+      }
+    }
+  }, [fetchState.chatWithDb?.messages.length, fetchState.chatWithDb?.activeTab]);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -974,7 +1224,13 @@ export default function Home() {
         }),
       });
 
-      const data = await response.json();
+      let data;
+      try {
+        data = await response.json();
+      } catch (e) {
+        console.error("Failed to parse API response:", e);
+        throw new Error("Invalid response from plan-feature API");
+      }
 
       console.log("Raw API response data:", data);
       console.log("fieldTypes in response:", data.fieldTypes);
@@ -983,13 +1239,29 @@ export default function Home() {
         throw new Error(data.error || "Failed to generate schema");
       }
 
-      // Create diagram for proposed schema (using Bubble types version)
+      // Validate API response has required fields
+      if (!data.generatedDbml || !data.generatedDbmlWithBubbleTypes) {
+        console.error("API response missing required fields:", {
+          hasGeneratedDbml: !!data.generatedDbml,
+          hasGeneratedDbmlWithBubbleTypes: !!data.generatedDbmlWithBubbleTypes
+        });
+        throw new Error("API response missing schema data");
+      }
+
+      // The API returns ONLY new tables for the feature (not existing tables)
+      // Merge them with the original schema to create the full proposed schema
+      const newTablesDbml = data.generatedDbml || '';
+      const newTablesWithBubbleTypes = data.generatedDbmlWithBubbleTypes || '';
+      const mergedDbml = (fetchState.data || '') + '\n\n' + newTablesDbml;
+      const mergedBubbleTypesDbml = (fetchState.data || '') + '\n\n' + newTablesWithBubbleTypes;
+
+      // Create diagram for proposed schema (using merged Bubble types version)
       const diagramResponse = await fetch("/api/diagram", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ dbml: data.generatedDbmlWithBubbleTypes }),
+        body: JSON.stringify({ dbml: mergedBubbleTypesDbml }),
       });
 
       if (!diagramResponse.ok) {
@@ -1002,14 +1274,17 @@ export default function Home() {
       console.log("=== API RESPONSE ===");
       console.log("fieldTypes exists:", !!data.fieldTypes);
       console.log("fieldTypes:", data.fieldTypes);
+      console.log("API returned (new tables only):", data.generatedDbml.substring(0, 200));
+      console.log("Merged with original (full proposed):", mergedDbml.substring(0, 200));
 
       const changes = analyzeChanges(
         fetchState.data || "",
-        data.generatedDbml,
+        mergedDbml,  // Compare against the merged full schema
         data.fieldTypes
       );
       console.log("=== CHANGES RESULT ===");
-      console.log("newTables comments fields:", changes.newTables?.comments?.map(f => ({ name: f.name, type: f.type })));
+      console.log("newTables:", Object.keys(changes.newTables));
+      console.log("newFields:", Object.keys(changes.newFields));
 
       setFetchState(prev => ({
         ...prev,
@@ -1019,7 +1294,7 @@ export default function Home() {
           description: featureDescription,
           featureTitle: data.featureTitle || featureDescription,
           originalDbml: fetchState.data,
-          generatedDbml: data.generatedDbml,
+          generatedDbml: mergedDbml,  // Store the full merged schema
           proposedEmbedUrl: diagramData.embedUrl,
           activeView: "proposed",
           changes,
@@ -1051,6 +1326,11 @@ export default function Home() {
         ...prev.featurePlanning!,
         activeView: view,
       },
+      // Update chat context when switching views
+      chatWithDb: prev.chatWithDb ? {
+        ...prev.chatWithDb,
+        currentSchemaContext: view,
+      } : undefined,
     }));
   };
 
@@ -1062,6 +1342,319 @@ export default function Home() {
       },
     }));
     setFeatureDescription("");
+  };
+
+  // Determine which schema the chat should reference based on current state
+  // Returns "current" if no feature planning, or the activeView when planning is active
+  const determineSchemaContext = (state: FetchState): "current" | "proposed" | null => {
+    // No schema loaded yet
+    if (!state.data) return null;
+
+    // If feature planning is active, use the view they're currently looking at
+    if (state.featurePlanning?.status === "success") {
+      return state.featurePlanning.activeView || "current";
+    }
+
+    // Default to current schema
+    return "current";
+  };
+
+  // Switch between "Plan a Feature" and "Chat with Database" tabs in the sidebar
+  const handleTabChange = (tab: "plan-feature" | "chat-db" | "table-finder") => {
+    setFetchState(prev => {
+      // Initialize chat state if switching to chat for the first time
+      if (tab === "chat-db" && !prev.chatWithDb) {
+        return {
+          ...prev,
+          chatWithDb: {
+            status: "idle",
+            messages: [],
+            currentSchemaContext: determineSchemaContext(prev),
+            activeTab: tab,
+          },
+        };
+      }
+
+      // Initialize table finder state if switching to it for the first time
+      if (tab === "table-finder" && !prev.tableFinder) {
+        console.log("✓ Initializing table-finder tab");
+        return {
+          ...prev,
+          chatWithDb: {
+            ...(prev.chatWithDb || {
+              status: "idle",
+              messages: [],
+              currentSchemaContext: null,
+            }),
+            activeTab: tab,
+          },
+          tableFinder: {
+            status: "idle",
+            messages: [],
+            results: [],
+          },
+        };
+      }
+
+      // Just update active tab if chat or table finder already exists
+      if (prev.chatWithDb) {
+        if (tab === "table-finder") {
+          console.log("✓ Switching to table-finder tab");
+        }
+        return {
+          ...prev,
+          chatWithDb: {
+            ...prev.chatWithDb,
+            activeTab: tab,
+            currentSchemaContext: tab === "chat-db" ? determineSchemaContext(prev) : prev.chatWithDb.currentSchemaContext,
+          },
+        };
+      }
+
+      return prev;
+    });
+  };
+
+  // Send a message to the chat API and get a response
+  const handleSendMessage = async (message: string) => {
+    if (!message.trim()) return;
+
+    // Determine which schema to use for this chat
+    const schemaContext = determineSchemaContext(fetchState);
+    if (!schemaContext) {
+      console.error("No schema available for chat");
+      return;
+    }
+
+    // Get the DBML for the current schema context
+    const dbmlToUse = schemaContext === "proposed"
+      ? fetchState.featurePlanning!.generatedDbml!
+      : fetchState.data!;
+
+    // Create a user message object to add to the chat
+    const userMessage: ChatMessage = {
+      id: `user-${Date.now()}`,
+      role: "user",
+      content: message.trim(),
+      timestamp: Date.now(),
+      schemaContext,
+    };
+
+    // Update state immediately with user message (for responsive UI)
+    setFetchState(prev => ({
+      ...prev,
+      chatWithDb: {
+        ...prev.chatWithDb!,
+        status: "chatting",
+        messages: [...prev.chatWithDb!.messages, userMessage],
+      },
+    }));
+
+    try {
+      // Prepare conversation history (last 6 messages = 3 exchanges) for context
+      const conversationHistory = fetchState.chatWithDb!.messages
+        .slice(-6)
+        .map(msg => ({
+          role: msg.role,
+          content: msg.content,
+        }));
+
+      // Call the chat API endpoint
+      const response = await fetch("/api/chat-db", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          dbml: dbmlToUse,
+          message: message.trim(),
+          schemaType: schemaContext,
+          conversationHistory,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to get response");
+      }
+
+      // Create assistant message to add to chat
+      const assistantMessage: ChatMessage = {
+        id: `assistant-${Date.now()}`,
+        role: "assistant",
+        content: data.response,
+        timestamp: Date.now(),
+        schemaContext,
+      };
+
+      // Update state with assistant's response
+      setFetchState(prev => ({
+        ...prev,
+        chatWithDb: {
+          ...prev.chatWithDb!,
+          status: "idle",
+          messages: [...prev.chatWithDb!.messages, assistantMessage],
+          error: undefined,
+        },
+      }));
+    } catch (error) {
+      // Handle any errors that occur during the API call
+      const errorMessage = error instanceof Error ? error.message : "An error occurred";
+
+      setFetchState(prev => ({
+        ...prev,
+        chatWithDb: {
+          ...prev.chatWithDb!,
+          status: "error",
+          error: errorMessage,
+        },
+      }));
+
+      // Auto-clear error after 5 seconds
+      setTimeout(() => {
+        setFetchState(prev => ({
+          ...prev,
+          chatWithDb: prev.chatWithDb ? {
+            ...prev.chatWithDb,
+            status: "idle",
+            error: undefined,
+          } : undefined,
+        }));
+      }, 5000);
+    }
+  };
+
+  // Handle table finder question - identify tables relevant to a feature and create table groups
+  const handleTableFinderQuestion = async (question: string) => {
+    if (!question.trim()) return;
+    if (!fetchState.data) {
+      console.error("No schema available for table finder");
+      return;
+    }
+
+    console.log("↓ Table Finder: Asking question:", question.substring(0, 60) + "...");
+
+    // Create a user message object
+    const userMessage: TableFinderMessage = {
+      id: `user-${Date.now()}`,
+      role: "user",
+      content: question.trim(),
+      timestamp: Date.now(),
+    };
+
+    // Update state immediately with user message
+    setFetchState(prev => ({
+      ...prev,
+      tableFinder: {
+        ...prev.tableFinder!,
+        status: "searching",
+        messages: [...prev.tableFinder!.messages, userMessage],
+        error: undefined,
+      },
+    }));
+
+    try {
+      // Call the table finder API endpoint with the current DBML
+      const response = await fetch("/api/table-finder", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          dbml: fetchState.data,
+          question: question.trim(),
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to find tables");
+      }
+
+      // Call diagram API to generate embed URL for the updated DBML with table groups
+      const diagramResponse = await fetch("/api/diagram", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          dbml: data.updatedDbml,
+        }),
+      });
+
+      const diagramData = await diagramResponse.json();
+
+      if (!diagramResponse.ok) {
+        throw new Error(diagramData.error || "Failed to generate diagram");
+      }
+
+      // Create a new result for this question
+      const resultId = `result-${Date.now()}`;
+      const summary = generateSummaryFromQuestion(question.trim());
+      const newResult = {
+        id: resultId,
+        question: question.trim(),
+        summary,
+        matchedTables: data.matchedTables,
+        embedUrl: diagramData.embedUrl,
+        dbml: data.updatedDbml,
+        explanation: data.explanation,
+      };
+
+      // Create assistant message with explanation and matched tables
+      const assistantMessage: TableFinderMessage = {
+        id: `assistant-${Date.now()}`,
+        role: "assistant",
+        content: data.explanation,
+        timestamp: Date.now(),
+        tableGroups: [data.tableGroupName],
+        matchedTables: data.matchedTables,
+      };
+
+      // Update state with assistant response and new diagram
+      setFetchState(prev => ({
+        ...prev,
+        chatWithDb: {
+          ...(prev.chatWithDb || { status: "idle", messages: [], currentSchemaContext: null }),
+          activeTab: "table-finder",
+        },
+        tableFinder: {
+          ...(prev.tableFinder || { status: "idle", messages: [], results: [] }),
+          status: "success" as const,
+          messages: [...(prev.tableFinder?.messages || []), assistantMessage],
+          results: [...(prev.tableFinder?.results || []), newResult],
+          activeResultId: resultId,
+          error: undefined,
+        },
+      }));
+    } catch (error) {
+      // Handle any errors that occur during the API call
+      const errorMessage = error instanceof Error ? error.message : "An error occurred";
+
+      setFetchState(prev => ({
+        ...prev,
+        tableFinder: {
+          ...prev.tableFinder!,
+          status: "error",
+          error: errorMessage,
+        },
+      }));
+    }
+  };
+
+  // Clear all messages from the chat and reset to idle state
+  const handleClearChat = () => {
+    setFetchState(prev => ({
+      ...prev,
+      chatWithDb: prev.chatWithDb ? {
+        ...prev.chatWithDb,
+        messages: [],
+        status: "idle",
+        error: undefined,
+      } : undefined,
+    }));
   };
 
   const handleTableNameChange = (
@@ -1314,6 +1907,8 @@ export default function Home() {
       let updatedDbmlWithBubbleTypes: string;
       try {
         updatedDbmlWithBubbleTypes = convertDbmlToBubbleTypes(updatedDbml);
+        // Ensure no duplicates were introduced during type conversion
+        updatedDbmlWithBubbleTypes = dedupDbml(updatedDbmlWithBubbleTypes);
       } catch (e) {
         console.error('Error converting DBML to Bubble types:', e);
         throw new Error(`Failed to convert DBML types: ${e instanceof Error ? e.message : String(e)}`);
@@ -1664,7 +2259,7 @@ export default function Home() {
                 <div id="diagram-container" className="flex-1 flex flex-row p-4 bg-zinc-100 gap-4">
                   {/* Diagram Section */}
                   <div className="flex-1 flex flex-col min-w-0">
-                    {/* Back Button and Current/Proposed Tabs */}
+                    {/* Back Button and Tabs */}
                     <div className="flex gap-2 mb-3 justify-between items-center">
                       <div className="flex gap-2 w-fit items-center">
                         <button
@@ -1676,6 +2271,7 @@ export default function Home() {
                             <polyline points="15 18 9 12 15 6"></polyline>
                           </svg>
                         </button>
+                        {/* Feature Planning Tabs */}
                         {fetchState.featurePlanning?.status === "success" && (
                           <>
                             <button
@@ -1700,15 +2296,47 @@ export default function Home() {
                             </button>
                           </>
                         )}
+                        {/* Table Finder Tabs */}
+                        {fetchState.tableFinder?.status === "success" && (
+                          <>
+                            {fetchState.tableFinder.results.map((result) => (
+                              <button
+                                key={result.id}
+                                onClick={() => setFetchState(prev => ({
+                                  ...prev,
+                                  tableFinder: prev.tableFinder ? {
+                                    ...prev.tableFinder,
+                                    activeResultId: result.id,
+                                  } : undefined,
+                                }))}
+                                className={`px-3 py-2 text-xs font-medium rounded-lg transition-colors ${
+                                  fetchState.tableFinder?.activeResultId === result.id
+                                    ? "bg-zinc-900 text-white"
+                                    : "bg-zinc-100 text-zinc-700 hover:bg-zinc-200"
+                                }`}
+                              >
+                                {result.summary}
+                              </button>
+                            ))}
+                          </>
+                        )}
                       </div>
 
-                      {/* Plan Another Button - Top Right */}
+                      {/* Plan Another / Find Tables Button - Top Right */}
                       {fetchState.featurePlanning?.status === "success" && (
                         <button
                           onClick={handlePlanFeature}
                           className="px-4 py-2 bg-zinc-900 text-white text-xs font-medium rounded-lg hover:bg-zinc-800 transition-colors flex-shrink-0"
                         >
                           + Plan Feature
+                        </button>
+                      )}
+                      {fetchState.tableFinder?.status === "success" && (
+                        <button
+                          onClick={() => handleTabChange("table-finder")}
+                          className="px-4 py-2 bg-zinc-900 text-white text-xs font-medium rounded-lg hover:bg-zinc-800 transition-colors flex-shrink-0"
+                        >
+                          + Find Tables
                         </button>
                       )}
                     </div>
@@ -1719,45 +2347,85 @@ export default function Home() {
                       </div>
                     ) : (
                       <>
-                        {/* Show current schema by default, or proposed if feature planning is active */}
-                        {fetchState.featurePlanning?.status === "success" && fetchState.featurePlanning.activeView === "proposed" ? (
+                        {(() => {
+                          const isTableFinderTab = fetchState.chatWithDb?.activeTab === "table-finder";
+                          const hasSuccess = fetchState.tableFinder?.status === "success";
+                          const hasActiveResult = !!fetchState.tableFinder?.activeResultId;
+                          console.log("Main area condition check:", {
+                            isTableFinderTab,
+                            hasSuccess,
+                            hasActiveResult,
+                            activeTab: fetchState.chatWithDb?.activeTab,
+                            tableFinder: fetchState.tableFinder,
+                          });
+                          return null;
+                        })()}
+                        {/* Show table finder diagram if table-finder tab is active and results exist */}
+                        {fetchState.chatWithDb?.activeTab === "table-finder" && fetchState.tableFinder?.status === "success" && fetchState.tableFinder.activeResultId ? (
                           <>
-                            {fetchState.featurePlanning.proposedEmbedUrl ? (
-                              <iframe
-                                key={fetchState.featurePlanning.proposedEmbedUrl}
-                                src={fetchState.featurePlanning.proposedEmbedUrl}
-                                className="w-full flex-1 border-0 rounded-[9px]"
-                                title="Proposed Database Diagram"
-                                allow="fullscreen"
-                                sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
-                                onLoad={() => console.log("Proposed iframe loaded:", fetchState.featurePlanning?.proposedEmbedUrl)}
-                                onError={() => console.error("Proposed iframe failed to load:", fetchState.featurePlanning?.proposedEmbedUrl)}
-                              />
-                            ) : (
-                              <div className="flex-1 p-12 flex items-center justify-center">
-                                <p className="text-zinc-600 text-sm">Proposed diagram could not be loaded.</p>
-                              </div>
-                            )}
+                            {(() => {
+                              const activeResult = fetchState.tableFinder?.results.find(r => r.id === fetchState.tableFinder?.activeResultId);
+                              return activeResult ? (
+                                <iframe
+                                  key={activeResult.embedUrl}
+                                  src={activeResult.embedUrl}
+                                  className="w-full flex-1 border-0 rounded-[9px]"
+                                  title="Table Groups Diagram"
+                                  allow="fullscreen"
+                                  sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
+                                  onLoad={() => console.log("Table-finder iframe loaded")}
+                                  onError={() => console.error("Table-finder iframe error")}
+                                />
+                              ) : (
+                                <div className="flex-1 p-12 flex items-center justify-center">
+                                  <p className="text-zinc-600 text-sm">Result not found.</p>
+                                </div>
+                              );
+                            })()}
                           </>
                         ) : (
                           <>
-                            {fetchState.embedUrl ? (
-                              <iframe
-                                src={fetchState.embedUrl}
-                                className="w-full flex-1 border-0 rounded-[9px]"
-                                title="Database Diagram"
-                                allow="fullscreen"
-                                sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
-                                onLoad={() => console.log("Iframe loaded:", fetchState.embedUrl)}
-                                onError={() => {
-                                  console.error("Iframe failed to load:", fetchState.embedUrl);
-                                  setFetchState(prev => ({...prev, iframeError: true}));
-                                }}
-                              />
+                            {/* Show current schema by default, or proposed if feature planning is active */}
+                            {fetchState.featurePlanning?.status === "success" && fetchState.featurePlanning.activeView === "proposed" ? (
+                              <>
+                                {fetchState.featurePlanning.proposedEmbedUrl ? (
+                                  <iframe
+                                    key={fetchState.featurePlanning.proposedEmbedUrl}
+                                    src={fetchState.featurePlanning.proposedEmbedUrl}
+                                    className="w-full flex-1 border-0 rounded-[9px]"
+                                    title="Proposed Database Diagram"
+                                    allow="fullscreen"
+                                    sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
+                                    onLoad={() => console.log("Proposed iframe loaded:", fetchState.featurePlanning?.proposedEmbedUrl)}
+                                    onError={() => console.error("Proposed iframe failed to load:", fetchState.featurePlanning?.proposedEmbedUrl)}
+                                  />
+                                ) : (
+                                  <div className="flex-1 p-12 flex items-center justify-center">
+                                    <p className="text-zinc-600 text-sm">Proposed diagram could not be loaded.</p>
+                                  </div>
+                                )}
+                              </>
                             ) : (
-                              <div className="flex-1 p-12 flex items-center justify-center">
-                                <p className="text-zinc-600 text-sm">Diagram could not be loaded. Check browser console for details.</p>
-                              </div>
+                              <>
+                                {fetchState.embedUrl ? (
+                                  <iframe
+                                    src={fetchState.embedUrl}
+                                    className="w-full flex-1 border-0 rounded-[9px]"
+                                    title="Database Diagram"
+                                    allow="fullscreen"
+                                    sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
+                                    onLoad={() => console.log("Iframe loaded:", fetchState.embedUrl)}
+                                    onError={() => {
+                                      console.error("Iframe failed to load:", fetchState.embedUrl);
+                                      setFetchState(prev => ({...prev, iframeError: true}));
+                                    }}
+                                  />
+                                ) : (
+                                  <div className="flex-1 p-12 flex items-center justify-center">
+                                    <p className="text-zinc-600 text-sm">Diagram could not be loaded. Check browser console for details.</p>
+                                  </div>
+                                )}
+                              </>
                             )}
                           </>
                         )}
@@ -1781,7 +2449,45 @@ export default function Home() {
                       boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.3)'
                     }}
                   >
-                    <h3 className="font-semibold text-sm text-zinc-900 mb-4">AI Insights</h3>
+                    {/* Tab Navigation - Show only if schema is loaded */}
+                    {fetchState.status === "success" && (
+                      <div className="flex gap-1 mb-3 border-b border-zinc-200">
+                        <button
+                          onClick={() => handleTabChange("plan-feature")}
+                          className={`px-3 py-2 text-xs font-medium transition-colors ${
+                            !fetchState.chatWithDb || fetchState.chatWithDb.activeTab === "plan-feature"
+                              ? "border-b-2 border-zinc-900 text-zinc-900"
+                              : "text-zinc-500 hover:text-zinc-700"
+                          }`}
+                        >
+                          Plan Feature
+                        </button>
+                        <button
+                          onClick={() => handleTabChange("chat-db")}
+                          className={`px-3 py-2 text-xs font-medium transition-colors ${
+                            fetchState.chatWithDb?.activeTab === "chat-db"
+                              ? "border-b-2 border-zinc-900 text-zinc-900"
+                              : "text-zinc-500 hover:text-zinc-700"
+                          }`}
+                        >
+                          Chat with Database
+                        </button>
+                        <button
+                          onClick={() => handleTabChange("table-finder")}
+                          className={`px-3 py-2 text-xs font-medium transition-colors ${
+                            fetchState.chatWithDb?.activeTab === "table-finder"
+                              ? "border-b-2 border-zinc-900 text-zinc-900"
+                              : "text-zinc-500 hover:text-zinc-700"
+                          }`}
+                        >
+                          Table Finder
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Feature Planning Tab Content */}
+                    {(!fetchState.chatWithDb || fetchState.chatWithDb.activeTab === "plan-feature") && (
+                      <>
 
                     {/* Idle State */}
                     {!fetchState.featurePlanning || fetchState.featurePlanning.status === "idle" ? (
@@ -2129,23 +2835,31 @@ export default function Home() {
                               button.textContent = "Updating...";
 
                               try {
-                                // Step 0: Generate DBML that includes inline edits
-                                // This ensures the API sees any tables/fields created inline, just like it receives the full current state from "Generate schema"
+                                // Step 0a: Generate full DBML that includes inline edits and original tables
+                                // This is used later for the diagram
                                 const currentDbmlWithInlineEdits = convertChangesToDbml(
                                   fetchState.featurePlanning?.originalDbml || '',
                                   fetchState.featurePlanning?.generatedDbml || '',
                                   fetchState.featurePlanning?.editedChanges!,
                                   fetchState.featurePlanning?.tableNameMap
                                 );
-                                console.log('📝 Complete DBML with inline edits sent to API:');
-                                console.log(currentDbmlWithInlineEdits);
+
+                                // Step 0b: Generate proposal-only DBML (without original unmodified tables)
+                                // This is sent to the edit-dbml API so Claude only edits the newly generated proposal
+                                const proposalDbml = convertProposalToDbml(
+                                  fetchState.featurePlanning?.generatedDbml || '',
+                                  fetchState.featurePlanning?.editedChanges!,
+                                  fetchState.featurePlanning?.tableNameMap
+                                );
+                                console.log('📝 Proposal DBML (newly generated tables only) sent to edit-dbml API:');
+                                console.log(proposalDbml);
 
                                 // Step 1: Get updated DBML from Claude
                                 const editResponse = await fetch("/api/edit-dbml", {
                                   method: "POST",
                                   headers: { "Content-Type": "application/json" },
                                   body: JSON.stringify({
-                                    currentDbml: currentDbmlWithInlineEdits,
+                                    currentDbml: proposalDbml,
                                     editInstruction: input.value,
                                   }),
                                 });
@@ -2156,12 +2870,17 @@ export default function Home() {
 
                                 const editData = await editResponse.json();
 
-                                // Step 2: Generate new diagram
+                                // Step 2a: Merge the updated proposal with the original schema
+                                // The API returned ONLY the updated proposal tables, so we need to merge with original
+                                const mergedUpdatedDbml = (fetchState.featurePlanning?.originalDbml || '') + '\n\n' + editData.updatedDbml;
+                                const mergedUpdatedBubbleTypesDbml = (fetchState.featurePlanning?.originalDbml || '') + '\n\n' + editData.updatedDbmlWithBubbleTypes;
+
+                                // Step 2b: Generate new diagram with merged schema
                                 const diagramResponse = await fetch("/api/diagram", {
                                   method: "POST",
                                   headers: { "Content-Type": "application/json" },
                                   body: JSON.stringify({
-                                    dbml: editData.updatedDbmlWithBubbleTypes,
+                                    dbml: mergedUpdatedBubbleTypesDbml,
                                   }),
                                 });
 
@@ -2171,20 +2890,30 @@ export default function Home() {
                                   newEmbedUrl = diagramData.embedUrl;
                                 } else {
                                   // Fallback if diagram API fails
-                                  newEmbedUrl = `https://dbdiagram.io/embed/${encodeURIComponent(editData.updatedDbmlWithBubbleTypes)}`;
+                                  newEmbedUrl = `https://dbdiagram.io/embed/${encodeURIComponent(mergedUpdatedBubbleTypesDbml)}`;
                                 }
 
                                 // Step 3: Analyze changes (compare against original schema)
                                 const changes = analyzeChanges(
                                   fetchState.featurePlanning?.originalDbml || "",
-                                  editData.updatedDbml,
+                                  mergedUpdatedDbml,  // Compare against the merged full schema
                                   editData.fieldTypes
                                 );
 
-                                // Step 4: Update state
+                                // Step 4: Generate TableGroup for feature tables
+                                // Use convertChangesToDbml with the updated proposal (not merged) so it can generate TableGroup
+                                // convertChangesToDbml will merge original + proposal and add TableGroup
+                                const dbmlWithTableGroup = convertChangesToDbml(
+                                  fetchState.featurePlanning?.originalDbml || '',
+                                  editData.updatedDbml,  // Pass just the updated proposal, not merged
+                                  changes,
+                                  {}  // No table name map needed after Apply Edit
+                                );
+
+                                // Step 5: Update state
                                 setFetchState(prev => {
-                                  // Use the API response as the source of truth
-                                  // It already includes any inline-created tables since they were in the DBML sent to it
+                                  // Use the schema with TableGroup as the source of truth
+                                  // It includes the original tables + updated proposal tables with proper grouping
                                   const editedChanges = JSON.parse(JSON.stringify(changes));
 
                                   console.log('✅ Applied API changes:', editedChanges);
@@ -2194,7 +2923,7 @@ export default function Home() {
                                     successMessage: "Schema updated!",
                                     featurePlanning: {
                                       ...prev.featurePlanning!,
-                                      generatedDbml: editData.updatedDbml,
+                                      generatedDbml: dbmlWithTableGroup,  // Store with TableGroup
                                       proposedEmbedUrl: newEmbedUrl,
                                       activeView: "proposed",
                                       changes,
@@ -2240,6 +2969,298 @@ export default function Home() {
                         >
                           Try Again
                         </button>
+                      </div>
+                    )}
+                      </>
+                    )}
+
+                    {/* Chat with Database Tab Content */}
+                    {fetchState.chatWithDb?.activeTab === "chat-db" && (
+                      <div className="flex flex-col h-full">
+                        {/* Empty State - Show when no messages */}
+                        {fetchState.chatWithDb.messages.length === 0 ? (
+                          <div className="flex-1 flex flex-col items-center justify-center text-center space-y-3 py-6">
+                            <div className="text-3xl">💬</div>
+                            <h3 className="font-semibold text-sm text-zinc-900">Chat with your Database</h3>
+                            <p className="text-xs text-zinc-600">Ask questions about your schema or request improvement suggestions</p>
+                            <div className="w-full space-y-2 mt-4">
+                              <button
+                                onClick={() => handleSendMessage("What tables handle user authentication?")}
+                                className="w-full text-xs text-zinc-600 hover:text-zinc-900 border border-zinc-200 rounded px-2 py-2 transition-colors hover:bg-zinc-50"
+                              >
+                                What tables handle user authentication?
+                              </button>
+                              <button
+                                onClick={() => handleSendMessage("Suggest improvements for this schema")}
+                                className="w-full text-xs text-zinc-600 hover:text-zinc-900 border border-zinc-200 rounded px-2 py-2 transition-colors hover:bg-zinc-50"
+                              >
+                                Suggest improvements for this schema
+                              </button>
+                              <button
+                                onClick={() => handleSendMessage("Explain the relationships in this database")}
+                                className="w-full text-xs text-zinc-600 hover:text-zinc-900 border border-zinc-200 rounded px-2 py-2 transition-colors hover:bg-zinc-50"
+                              >
+                                Explain the relationships in this database
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <>
+                            {/* Message List */}
+                            <div
+                              id="chat-messages"
+                              className="flex-1 overflow-y-auto space-y-2 mb-3 pr-2"
+                            >
+                              {fetchState.chatWithDb.messages.map((msg) => (
+                                <div key={msg.id} className="space-y-1">
+                                  {/* Schema Context Badge */}
+                                  <div className="text-[10px] text-zinc-500">
+                                    {msg.schemaContext === "current" ? "Current Schema" : "Proposed Schema"}
+                                  </div>
+                                  {/* Message Bubble */}
+                                  <div
+                                    className={`max-w-[85%] text-sm font-sans ${
+                                      msg.role === "user"
+                                        ? "ml-auto max-w-[80%] bg-blue-100 border border-blue-200 text-blue-900"
+                                        : "mr-auto bg-white border border-zinc-200 text-zinc-900"
+                                    } p-2 rounded-lg`}
+                                  >
+                                    {msg.role === "assistant" ? (
+                                      <ReactMarkdown
+                                        components={{
+                                          h1: ({node, ...props}) => <h1 className="font-bold mb-3 mt-2" {...props} />,
+                                          h2: ({node, ...props}) => <h2 className="font-bold mb-2 mt-2" {...props} />,
+                                          h3: ({node, ...props}) => <h3 className="font-semibold mb-2" {...props} />,
+                                          p: ({node, ...props}) => <p className="mb-3" {...props} />,
+                                          ul: ({node, ...props}) => <ul className="ml-3 space-y-1 mb-3" {...props} />,
+                                          ol: ({node, ...props}) => <ol className="ml-4 space-y-1 mb-3" {...props} />,
+                                          li: ({node, ...props}) => <li style={{listStyleType: 'disc'}} {...props} />,
+                                          code: ({node, children, ...props}: any) => <span {...props}>{children}</span>,
+                                          blockquote: ({node, ...props}) => <blockquote className="border-l-2 pl-2 italic mb-3" {...props} />,
+                                          strong: ({node, ...props}) => <strong className="font-semibold" {...props} />,
+                                          em: ({node, ...props}) => <em className="italic" {...props} />,
+                                          a: ({node, ...props}) => <a className="text-blue-600 hover:underline" target="_blank" rel="noopener noreferrer" {...props} />,
+                                          table: ({node, ...props}) => <table className="mb-3 w-full" {...props} />,
+                                          tr: ({node, ...props}) => <tr className="border-b" {...props} />,
+                                          th: ({node, ...props}) => <th className="text-left px-1 py-0.5 font-semibold" {...props} />,
+                                          td: ({node, ...props}) => <td className="text-left px-1 py-0.5" {...props} />,
+                                          hr: ({node, ...props}) => <hr className="my-3" {...props} />,
+                                        }}
+                                      >
+                                        {msg.content}
+                                      </ReactMarkdown>
+                                    ) : (
+                                      <div className="whitespace-pre-wrap">{msg.content}</div>
+                                    )}
+                                  </div>
+                                </div>
+                              ))}
+                              {/* Loading State */}
+                              {fetchState.chatWithDb.status === "chatting" && (
+                                <div className="flex gap-2 items-center">
+                                  <div className="w-2 h-2 bg-zinc-400 rounded-full animate-bounce" style={{ animationDelay: "0ms" }}></div>
+                                  <div className="w-2 h-2 bg-zinc-400 rounded-full animate-bounce" style={{ animationDelay: "150ms" }}></div>
+                                  <div className="w-2 h-2 bg-zinc-400 rounded-full animate-bounce" style={{ animationDelay: "300ms" }}></div>
+                                </div>
+                              )}
+                            </div>
+                          </>
+                        )}
+
+                        {/* Error Display */}
+                        {fetchState.chatWithDb.error && (
+                          <div className="mb-2 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-800">
+                            {fetchState.chatWithDb.error}
+                          </div>
+                        )}
+
+                        {/* Chat Input Area */}
+                        <div className="border-t border-zinc-200 pt-2 space-y-2">
+                          <textarea
+                            placeholder="Ask about your schema or request suggestions..."
+                            className="w-full p-2 border border-zinc-200 rounded text-xs resize-none focus:outline-none focus:ring-2 focus:ring-zinc-900"
+                            rows={3}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" && !e.shiftKey) {
+                                e.preventDefault();
+                                const textarea = e.currentTarget;
+                                handleSendMessage(textarea.value);
+                                textarea.value = "";
+                              }
+                            }}
+                            id="chat-input"
+                            disabled={fetchState.chatWithDb.status === "chatting"}
+                          />
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => {
+                                const textarea = document.getElementById("chat-input") as HTMLTextAreaElement;
+                                if (textarea) {
+                                  handleSendMessage(textarea.value);
+                                  textarea.value = "";
+                                }
+                              }}
+                              disabled={fetchState.chatWithDb.status === "chatting"}
+                              className="flex-1 px-3 py-1.5 bg-zinc-900 text-white text-xs font-medium rounded hover:bg-zinc-800 disabled:bg-gray-400 transition-colors"
+                            >
+                              Send
+                            </button>
+                            {fetchState.chatWithDb.messages.length > 0 && (
+                              <button
+                                onClick={handleClearChat}
+                                className="px-2 py-1.5 border border-zinc-200 text-zinc-600 text-xs font-medium rounded hover:bg-zinc-50 transition-colors"
+                                title="Clear chat history"
+                              >
+                                Clear
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Table Finder Tab Content */}
+                    {fetchState.chatWithDb?.activeTab === "table-finder" && (
+                      <div className="flex flex-col h-full">
+                        {/* Title / Header */}
+                        <div className="mb-3 pb-2 border-b border-zinc-200">
+                          <h3 className="font-semibold text-sm text-zinc-900">Find Related Tables</h3>
+                          <p className="text-xs text-zinc-600 mt-1">Ask which tables are involved in a feature or workflow</p>
+                        </div>
+
+                        {/* Empty State - Show when no questions asked */}
+                        {(!fetchState.tableFinder?.results || fetchState.tableFinder.results.length === 0) && (
+                          <div className="flex-1 flex flex-col items-center justify-center text-center space-y-3 py-6">
+                            <div className="text-3xl">🔍</div>
+                            <p className="text-xs text-zinc-600 px-2">Ask a question about your database to see related tables</p>
+                            <div className="w-full space-y-2 mt-4">
+                              <button
+                                onClick={() => handleTableFinderQuestion("What tables are involved in user authentication?")}
+                                className="w-full text-xs text-zinc-600 hover:text-zinc-900 border border-zinc-200 rounded px-2 py-2 transition-colors hover:bg-zinc-50"
+                              >
+                                What tables are involved in user authentication?
+                              </button>
+                              <button
+                                onClick={() => handleTableFinderQuestion("Show me tables related to billing")}
+                                className="w-full text-xs text-zinc-600 hover:text-zinc-900 border border-zinc-200 rounded px-2 py-2 transition-colors hover:bg-zinc-50"
+                              >
+                                Show me tables related to billing
+                              </button>
+                              <button
+                                onClick={() => handleTableFinderQuestion("Which tables handle order processing?")}
+                                className="w-full text-xs text-zinc-600 hover:text-zinc-900 border border-zinc-200 rounded px-2 py-2 transition-colors hover:bg-zinc-50"
+                              >
+                                Which tables handle order processing?
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Message History - Show previous questions */}
+                        {fetchState.tableFinder?.messages.length !== 0 && (
+                          <div className="mb-3 space-y-2 max-h-[200px] overflow-y-auto pr-2 border-t border-zinc-200 pt-2">
+                            {fetchState.tableFinder?.messages.map((msg) => (
+                              <div key={msg.id} className="space-y-1">
+                                {/* Message Bubble */}
+                                <div
+                                  className={`text-sm font-sans ${
+                                    msg.role === "user"
+                                      ? "ml-auto max-w-[80%] bg-blue-100 border border-blue-200 text-blue-900"
+                                      : "mr-auto bg-white border border-zinc-200 text-zinc-900"
+                                  } p-2 rounded-lg`}
+                                >
+                                  {msg.content}
+                                </div>
+                                {/* Matched Tables Display */}
+                                {msg.matchedTables && msg.matchedTables.length > 0 && (
+                                  <div className="mr-auto max-w-[80%] text-xs space-y-1">
+                                    <div className="text-zinc-600 font-medium">Tables found:</div>
+                                    <div className="flex flex-wrap gap-1">
+                                      {msg.matchedTables.map((table) => (
+                                        <span
+                                          key={table}
+                                          className="inline-block bg-amber-100 text-amber-900 px-2 py-1 rounded text-xs"
+                                        >
+                                          {table}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                            {/* Loading State */}
+                            {fetchState.tableFinder?.status === "searching" && (
+                              <div className="flex gap-2 items-center">
+                                <div className="w-2 h-2 bg-zinc-400 rounded-full animate-bounce" style={{ animationDelay: "0ms" }}></div>
+                                <div className="w-2 h-2 bg-zinc-400 rounded-full animate-bounce" style={{ animationDelay: "150ms" }}></div>
+                                <div className="w-2 h-2 bg-zinc-400 rounded-full animate-bounce" style={{ animationDelay: "300ms" }}></div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Error Display */}
+                        {fetchState.tableFinder?.error && (
+                          <div className="mb-2 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-800">
+                            {fetchState.tableFinder.error}
+                          </div>
+                        )}
+
+                        {/* Table Finder Input Area */}
+                        <div className="border-t border-zinc-200 pt-2 space-y-2">
+                          <textarea
+                            placeholder="Ask which tables are involved in a feature or workflow..."
+                            className="w-full p-2 border border-zinc-200 rounded text-xs resize-none focus:outline-none focus:ring-2 focus:ring-zinc-900"
+                            rows={3}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" && !e.shiftKey) {
+                                e.preventDefault();
+                                const textarea = e.currentTarget;
+                                handleTableFinderQuestion(textarea.value);
+                                textarea.value = "";
+                              }
+                            }}
+                            id="table-finder-input"
+                            disabled={fetchState.tableFinder?.status === "searching"}
+                          />
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => {
+                                const textarea = document.getElementById("table-finder-input") as HTMLTextAreaElement;
+                                if (textarea) {
+                                  handleTableFinderQuestion(textarea.value);
+                                  textarea.value = "";
+                                }
+                              }}
+                              disabled={fetchState.tableFinder?.status === "searching"}
+                              className="flex-1 px-3 py-1.5 bg-zinc-900 text-white text-xs font-medium rounded hover:bg-zinc-800 disabled:bg-gray-400 transition-colors"
+                            >
+                              Search Tables
+                            </button>
+                            {fetchState.tableFinder?.messages.length !== 0 && (
+                              <button
+                                onClick={() => {
+                                  setFetchState(prev => ({
+                                    ...prev,
+                                    tableFinder: prev.tableFinder ? {
+                                      ...prev.tableFinder,
+                                      messages: [],
+                                      status: "idle",
+                                      error: undefined,
+                                      currentDbml: undefined,
+                                      currentEmbedUrl: undefined,
+                                    } : undefined,
+                                  }));
+                                }}
+                                className="px-2 py-1.5 border border-zinc-200 text-zinc-600 text-xs font-medium rounded hover:bg-zinc-50 transition-colors"
+                                title="Clear search history"
+                              >
+                                Clear
+                              </button>
+                            )}
+                          </div>
+                        </div>
                       </div>
                     )}
                   </div>
