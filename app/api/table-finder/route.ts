@@ -44,15 +44,13 @@ ${simplifiedDbml}
 YOUR TASK:
 1. The user will ask a question about which tables are involved in a specific feature or workflow
 2. Identify ALL tables from the schema that are relevant to answering their question
-3. Add a TableGroup to the end of the DBML that groups these related tables together
-4. Generate a descriptive name for the TableGroup based on the feature/concept asked about
+3. Generate a TableGroup definition that groups these related tables together
 
 IMPORTANT RULES:
-1. Return ONLY valid DBML - no markdown code blocks, no explanations, no extra text
-2. Do NOT modify any existing tables - only ADD a new TableGroup at the end
-3. Do NOT add any new tables or fields
-4. Ensure ALL braces are balanced
-5. The TableGroup must include a Note explaining why these tables are grouped together
+1. Return ONLY the TableGroup block - no markdown code blocks, no explanations, no extra text
+2. Do NOT add any new tables or fields
+3. Ensure ALL braces are balanced
+4. The TableGroup must include a Note explaining why these tables are grouped together
 
 TABLEGROUP SYNTAX:
 TableGroup "descriptive_name" [color: #FFBD94] {
@@ -71,7 +69,7 @@ TableGroup "user_authentication" [color: #FFBD94] {
   Note: '''Tables involved in user authentication, including user accounts, active sessions, and login tracking'''
 }
 
-Return the COMPLETE original DBML followed by the new TableGroup at the end. Nothing else.`;
+Return ONLY the TableGroup block shown above. Nothing else.`;
 }
 
 // Validates basic DBML structure - checks for tables and balanced braces
@@ -193,11 +191,11 @@ export async function POST(request: NextRequest) {
       ],
     });
 
-    // Extract response text
-    let updatedDbml =
+    // Extract response text (Claude returns ONLY the TableGroup block)
+    let tableGroupBlock =
       message.content[0].type === "text" ? message.content[0].text : "";
 
-    if (!updatedDbml) {
+    if (!tableGroupBlock) {
       return NextResponse.json(
         { error: "No response from AI" },
         { status: 500 }
@@ -205,15 +203,18 @@ export async function POST(request: NextRequest) {
     }
 
     // Clean up markdown if present
-    updatedDbml = updatedDbml.trim();
-    if (updatedDbml.startsWith("```")) {
-      updatedDbml = updatedDbml
+    tableGroupBlock = tableGroupBlock.trim();
+    if (tableGroupBlock.startsWith("```")) {
+      tableGroupBlock = tableGroupBlock
         .replace(/^```(?:dbml)?\n?/, "")
         .replace(/\n?```$/, "");
     }
-    updatedDbml = updatedDbml.trim();
+    tableGroupBlock = tableGroupBlock.trim();
 
-    // Validate the returned DBML
+    // Append the TableGroup to the original DBML to create the complete updated schema
+    const updatedDbml = dbml.trimEnd() + "\n\n" + tableGroupBlock;
+
+    // Validate the combined DBML
     const outputValidation = validateDbml(updatedDbml);
     if (!outputValidation.valid) {
       return NextResponse.json(
@@ -222,7 +223,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Extract TableGroup information from the response
+    // Extract TableGroup information from the combined DBML
     const tableGroupInfo = extractTableGroupInfo(updatedDbml);
     if (!tableGroupInfo) {
       return NextResponse.json(
