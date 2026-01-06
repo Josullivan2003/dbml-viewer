@@ -2,13 +2,19 @@ import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 
 function buildSystemPrompt(currentDbml: string): string {
-  return `You are editing a Bubble.io database schema in DBML format.
+  return `You are editing a Bubble.io database schema proposal in DBML format.
 
-CURRENT SCHEMA:
+IMPORTANT: You are editing ONLY the proposed/newly generated schema shown below.
+Apply the user's requested changes to these tables only.
+Do NOT add new tables unless explicitly requested by the user.
+
+PROPOSED SCHEMA TO EDIT:
 ${currentDbml}
 
-EDIT OPERATIONS: ADD, MODIFY, REMOVE, RENAME
-Apply the user's requested changes to the schema.
+EDIT OPERATIONS: MODIFY, REMOVE, RENAME fields/tables
+- MODIFY: change field names, types, descriptions, add fields to existing tables
+- REMOVE: delete fields or tables from the proposal
+- RENAME: rename tables or fields
 
 BUBBLE TYPES ONLY: text, number, Y_N (yes/no), date (datetime), unique (primary keys), table names (foreign keys)
 Examples: id (unique), user_id (user), post_id (post)
@@ -17,7 +23,7 @@ Examples: id (unique), user_id (user), post_id (post)
 RULES:
 1. Return ONLY valid DBML - no markdown code blocks, no explanations
 2. Ensure ALL braces are balanced
-3. Include ALL existing tables with current state plus your edits
+3. Include ALL tables from the proposed schema (even ones you don't modify)
 4. Use snake_case names - all lowercase with underscores
 5. Primary key fields (named "id") use "unique" type - DO NOT add notes to id fields
 6. Foreign key fields: {table_name}_id {referenced_table_name}
@@ -25,7 +31,7 @@ RULES:
 8. Add table and field notes for clarity (but NOT for id/primary key fields)
 9. Preserve all existing Ref statements exactly as they are
 
-Return ONLY the complete updated DBML. Nothing else.`;
+Return ONLY the complete updated proposal DBML. Nothing else.`;
 }
 
 function validateDbml(dbml: string): { valid: boolean; error?: string } {
