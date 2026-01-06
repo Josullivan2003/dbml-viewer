@@ -1,14 +1,45 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 
+// Extract just table names from DBML (without field definitions) for faster processing
+// This reduces token count while keeping schema context
+function simplifyDbmlForPrompt(dbml: string): string {
+  const lines = dbml.split('\n');
+  const simplified: string[] = [];
+  let inTable = false;
+
+  for (const line of lines) {
+    // Keep table definitions
+    if (line.match(/^Table\s+/)) {
+      simplified.push(line);
+      inTable = true;
+      continue;
+    }
+    // End of table
+    if (line.trim() === '}' && inTable) {
+      simplified.push(line);
+      inTable = false;
+      continue;
+    }
+    // Keep Note comments inside tables (they document purpose)
+    if (inTable && line.includes('Note:')) {
+      simplified.push(line);
+    }
+  }
+
+  return simplified.join('\n');
+}
+
 // Builds the system prompt for table identification and grouping
 // This prompt tells Claude to analyze the user's question, identify relevant tables,
 // and add a TableGroup definition to the DBML
 function buildSystemPrompt(dbml: string): string {
+  const simplifiedDbml = simplifyDbmlForPrompt(dbml);
+
   return `You are a database schema expert analyzing a Bubble.io database schema in DBML format.
 
-CURRENT SCHEMA:
-${dbml}
+AVAILABLE TABLES:
+${simplifiedDbml}
 
 YOUR TASK:
 1. The user will ask a question about which tables are involved in a specific feature or workflow
@@ -151,7 +182,7 @@ export async function POST(request: NextRequest) {
 
     const message = await anthropic.messages.create({
       model: "claude-haiku-4-5-20251001",
-      max_tokens: 8192,
+      max_tokens: 1024,
       temperature: 0.3,
       system: buildSystemPrompt(dbml),
       messages: [
