@@ -2123,12 +2123,23 @@ export default function Home() {
                               button.textContent = "Updating...";
 
                               try {
+                                // Step 0: Generate DBML that includes inline edits
+                                // This ensures the API sees any tables/fields created inline, just like it receives the full current state from "Generate schema"
+                                const currentDbmlWithInlineEdits = convertChangesToDbml(
+                                  fetchState.featurePlanning?.originalDbml || '',
+                                  fetchState.featurePlanning?.generatedDbml || '',
+                                  fetchState.featurePlanning?.editedChanges!,
+                                  fetchState.featurePlanning?.tableNameMap
+                                );
+                                console.log('📝 Complete DBML with inline edits sent to API:');
+                                console.log(currentDbmlWithInlineEdits);
+
                                 // Step 1: Get updated DBML from Claude
                                 const editResponse = await fetch("/api/edit-dbml", {
                                   method: "POST",
                                   headers: { "Content-Type": "application/json" },
                                   body: JSON.stringify({
-                                    currentDbml: fetchState.featurePlanning?.generatedDbml,
+                                    currentDbml: currentDbmlWithInlineEdits,
                                     editInstruction: input.value,
                                   }),
                                 });
