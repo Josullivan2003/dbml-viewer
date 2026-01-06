@@ -1728,8 +1728,10 @@ export default function Home() {
                                 src={fetchState.featurePlanning.proposedEmbedUrl}
                                 className="w-full flex-1 border-0 rounded-[9px]"
                                 title="Proposed Database Diagram"
-                                loading="lazy"
                                 allow="fullscreen"
+                                sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
+                                onLoad={() => console.log("Proposed iframe loaded:", fetchState.featurePlanning?.proposedEmbedUrl)}
+                                onError={() => console.error("Proposed iframe failed to load:", fetchState.featurePlanning?.proposedEmbedUrl)}
                               />
                             ) : (
                               <div className="flex-1 p-12 flex items-center justify-center">
@@ -1744,9 +1746,13 @@ export default function Home() {
                                 src={fetchState.embedUrl}
                                 className="w-full flex-1 border-0 rounded-[9px]"
                                 title="Database Diagram"
-                                loading="lazy"
                                 allow="fullscreen"
-                                onError={() => setFetchState(prev => ({...prev, iframeError: true}))}
+                                sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
+                                onLoad={() => console.log("Iframe loaded:", fetchState.embedUrl)}
+                                onError={() => {
+                                  console.error("Iframe failed to load:", fetchState.embedUrl);
+                                  setFetchState(prev => ({...prev, iframeError: true}));
+                                }}
                               />
                             ) : (
                               <div className="flex-1 p-12 flex items-center justify-center">
