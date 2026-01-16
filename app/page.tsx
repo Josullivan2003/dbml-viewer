@@ -1,30 +1,88 @@
+/**
+ * DBML Viewer - Main Page Component
+ *
+ * This is the main user interface for the DBML Viewer application.
+ * It provides a complete workflow for viewing and editing Bubble.io database schemas.
+ *
+ * KEY FEATURES:
+ * 1. Schema Fetching - Enter a Bubble app URL to view its database structure
+ * 2. Diagram Visualization - See an interactive diagram of tables and relationships
+ * 3. Feature Planning - Describe a feature and get AI-generated database tables
+ * 4. Schema Editing - Edit the schema using natural language instructions
+ * 5. Database Analysis - Find data structure issues and get recommendations
+ * 6. Table Finder - Ask questions to identify which tables handle specific features
+ * 7. PDF Export - Download the diagram as a PDF document
+ *
+ * ARCHITECTURE:
+ * This is a client-side React component that communicates with several API endpoints:
+ * - /api/schema - Fetches and transforms schema from Bubble apps
+ * - /api/diagram - Creates visual diagrams via dbDiagram.io
+ * - /api/edit-dbml - AI-powered schema editing
+ * - /api/plan-feature - AI-powered feature planning
+ * - /api/analyze-schema - Database structure analysis
+ * - /api/refactor-schema - Automatic schema refactoring
+ * - /api/table-finder - AI-powered table identification
+ * - /api/download-pdf - PDF export functionality
+ *
+ * STATE MANAGEMENT:
+ * Uses React useState hooks to manage:
+ * - URL input and loading states
+ * - Current DBML schema (original and proposed changes)
+ * - Diagram embed URLs
+ * - Analysis results and issues
+ * - UI mode (viewing, editing, analyzing, etc.)
+ */
+
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 
+/**
+ * TableField Interface
+ *
+ * Represents a single field (column) in a database table.
+ * - name: The field name (e.g., "email", "user_id")
+ * - type: The data type (e.g., "text", "number", "user")
+ * - description: Optional explanation of what the field is for
+ */
 interface TableField {
   name: string;
   type: string;
   description?: string;
 }
 
+/**
+ * SchemaChange Interface
+ *
+ * Represents the differences between the current schema and proposed changes.
+ * Used to show users what new tables/fields will be added when they plan features.
+ * - newTables: Completely new tables being added
+ * - newFields: New fields being added to existing tables
+ * - tableDescriptions: Explanations of what each table is for
+ */
 interface SchemaChange {
   newTables: { [tableName: string]: TableField[] };
   newFields: { [tableName: string]: TableField[] };
   tableDescriptions?: { [tableName: string]: string };
 }
 
-// Message structure for chat-based database queries
-interface ChatMessage {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  timestamp: number;
-  schemaContext: "current" | "proposed";
-}
-
-// Message structure for table finder (identifying which tables are involved in features)
+/**
+ * TableFinderMessage Interface
+ *
+ * Represents a single message in the Table Finder chat conversation.
+ * Users can ask questions like "What tables handle payments?" and get
+ * responses explaining which tables are involved.
+ *
+ * - id: Unique identifier for this message
+ * - role: "user" for questions, "assistant" for AI responses
+ * - content: The actual text of the message
+ * - timestamp: When the message was sent (for ordering)
+ * - tableGroups: Names of TableGroup definitions created
+ * - matchedTables: Which tables were identified as relevant
+ * - tableExplanations: Per-table explanations of their role
+ */
 interface TableFinderMessage {
   id: string;
   role: "user" | "assistant";
@@ -32,19 +90,185 @@ interface TableFinderMessage {
   timestamp: number;
   tableGroups?: string[];
   matchedTables?: string[];
+  tableExplanations?: { table: string; explanation: string }[];
 }
 
+// Schema Analysis types - used to identify structural issues in the database schema
+// These issues can impact app performance and scalability
+type IssueSeverity = "warning" | "suggestion" | "info";
+type IssueCategory =
+  | "missing-normalization"   // Repeated column groups that should be a separate table
+  | "over-normalization"      // Too many small tables requiring excessive joins
+  | "missing-denormalization" // Frequently accessed data requiring multiple lookups
+  | "wide-table"              // Tables with too many columns that should be split
+  | "unbounded-growth";       // Tables that will grow indefinitely without partitioning
+
+// Represents a single schema issue found during analysis
+interface SchemaIssue {
+  id: string;
+  category: IssueCategory;
+  severity: IssueSeverity;
+  title: string;
+  description: string;
+  affectedTables: string[];
+  affectedFields?: string[];
+  recommendation: string;
+}
+
+// The complete result of a schema analysis
+interface SchemaAnalysisResult {
+  performance: number;  // Overall performance score from 0-100
+  issues: SchemaIssue[];
+  summary: {
+    totalIssues: number;
+    byCategory: Record<IssueCategory, number>;
+    bySeverity: Record<IssueSeverity, number>;
+  };
+  analyzedAt: number;
+}
+
+// Returns a simple one-liner explaining how the database structure is impacting the app
+function getDatabaseHealthText(score: number): string {
+  if (score >= 90) {
+    return "Your database structure is well-optimized.";
+  } else if (score >= 70) {
+    return "Your database structure could use some improvements.";
+  } else if (score >= 50) {
+    return "Your database structure is slowing down your app.";
+  } else if (score >= 30) {
+    return "Your database structure is significantly slowing down your app.";
+  } else {
+    return "Your database structure is severely slowing down your app.";
+  }
+}
+
+// Extracts the app name from a URL and capitalizes it
+// Example: "https://partyplease.co/version-test" -> "Partyplease"
+function getAppNameFromUrl(url: string): string {
+  if (!url) return "";
+  // Remove protocol, trailing slash, get first part of domain, capitalize first letter
+  const domain = url.replace(/^https?:\/\//, "").replace(/\/$/, "").split("/")[0];
+  const appName = domain.split(".")[0];
+  return appName.charAt(0).toUpperCase() + appName.slice(1);
+}
+
+// Human-readable labels for each issue category - focused on performance impact
+const categoryLabels: Record<IssueCategory, string> = {
+  "missing-normalization": "Missing Normalization",
+  "over-normalization": "Over-Normalization",
+  "missing-denormalization": "Missing Denormalization",
+  "wide-table": "Wide Table",
+  "unbounded-growth": "Unbounded Growth",
+};
+
+// IssueCard component - displays a single schema issue with expandable details
+// Shows severity icon, title, category, and when expanded: description, recommendation, and refactor button
+interface IssueCardProps {
+  issue: SchemaIssue;
+  onRefactor?: (issue: SchemaIssue) => void;
+  isRefactoring?: boolean;
+}
+
+function IssueCard({ issue, onRefactor, isRefactoring }: IssueCardProps) {
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  // Color schemes for different severity levels - matches the filter button colors
+  const severityStyles = {
+    warning: "bg-red-50 border-red-200",      // High Impact - red
+    suggestion: "bg-amber-50 border-amber-200", // Medium Impact - amber/yellow
+    info: "bg-zinc-50 border-zinc-200",
+  };
+
+  // Colored dots to indicate severity - matches the filter button dots
+  const severityDots = {
+    warning: "bg-red-500",    // High Impact - red
+    suggestion: "bg-amber-400", // Medium Impact - amber/yellow
+    info: "bg-zinc-400",
+  };
+
+  return (
+    <div className={`border rounded-lg overflow-hidden ${severityStyles[issue.severity]}`}>
+      <button
+        onClick={() => setIsExpanded(!isExpanded)}
+        className="w-full px-3 py-2 flex items-start gap-2 text-left hover:bg-white/50 transition-colors"
+      >
+        <span className={`w-2 h-2 mt-1.5 rounded-full flex-shrink-0 ${severityDots[issue.severity]}`}></span>
+        <div className="flex-1 min-w-0">
+          <p className="text-xs font-semibold text-zinc-900">{issue.title}</p>
+          <p className="text-[10px] text-zinc-500 mt-0.5">
+            {categoryLabels[issue.category]}
+          </p>
+        </div>
+        <span className="text-zinc-400 text-xs flex-shrink-0">
+          {isExpanded ? "▼" : "►"}
+        </span>
+      </button>
+
+      {isExpanded && (
+        <div className="px-3 pb-3 space-y-2 border-t border-inherit bg-white/30">
+          {/* Description */}
+          <div className="pt-2">
+            <p className="text-xs text-zinc-700">{issue.description}</p>
+          </div>
+
+          {/* Recommendation */}
+          <div className="bg-white/70 rounded p-2 mt-2 border border-zinc-100">
+            <p className="text-[10px] font-medium text-zinc-600 mb-1">Recommendation:</p>
+            <p className="text-xs text-zinc-700">{issue.recommendation}</p>
+          </div>
+
+          {/* Refactor Button */}
+          {onRefactor && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onRefactor(issue);
+              }}
+              disabled={isRefactoring}
+              className={`w-full mt-2 px-3 py-2 text-xs font-medium rounded-lg transition-colors ${
+                isRefactoring
+                  ? "bg-zinc-100 text-zinc-400 cursor-not-allowed"
+                  : "bg-zinc-900 text-white hover:bg-zinc-800"
+              }`}
+            >
+              {isRefactoring ? (
+                <span className="flex items-center justify-center gap-2">
+                  <span className="w-3 h-3 border-2 border-zinc-400 border-t-transparent rounded-full animate-spin"></span>
+                  Refactoring...
+                </span>
+              ) : (
+                "Refactor Schema"
+              )}
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Removes Duplicate Entries from DBML
+ *
+ * Sometimes when merging schemas or after AI editing, duplicate entries can appear.
+ * This function cleans up the DBML by removing:
+ * - Duplicate fields within the same table (keeps first occurrence)
+ * - Duplicate relationship (Ref) statements
+ *
+ * WHY THIS IS NEEDED:
+ * Duplicates cause errors when generating diagrams and are confusing to users.
+ * This cleanup ensures the schema is valid and easy to understand.
+ */
 function dedupDbml(dbml: string): string {
-  // Remove duplicate field definitions within tables and duplicate Ref statements
   console.log('=== DEDUPLICATING DBML ===');
   const lines = dbml.split('\n');
   const processedLines: string[] = [];
-  let currentTable = '';
-  let seenFields = new Set<string>();
-  let seenRefs = new Set<string>();
+  let currentTable = '';                    // Track which table we're currently inside
+  let seenFields = new Set<string>();       // Track field names we've seen in current table
+  let seenRefs = new Set<string>();         // Track relationship definitions we've seen
 
   for (const line of lines) {
-    // Track which table we're currently in
+    // When we enter a new table, reset our field tracking
     const tableMatch = line.match(/Table\s+(?:"([^"]+)"|(\w+))/);
     if (tableMatch) {
       currentTable = tableMatch[1] || tableMatch[2];
@@ -53,31 +277,31 @@ function dedupDbml(dbml: string): string {
       continue;
     }
 
-    // Check if we're exiting a table
+    // When we exit a table (closing brace), reset field tracking
     if (line.trim() === '}') {
       seenFields.clear();
       processedLines.push(line);
       continue;
     }
 
-    // Check for duplicate field definitions within the current table
+    // Check if this line defines a field - skip duplicates
     const fieldMatch = line.match(/^\s*(\w+)\s+\w+/);
     if (fieldMatch && currentTable) {
       const fieldName = fieldMatch[1];
       if (seenFields.has(fieldName)) {
         console.log(`Removing duplicate field '${fieldName}' from table '${currentTable}'`);
-        continue;
+        continue; // Skip this duplicate field
       }
       seenFields.add(fieldName);
     }
 
-    // Check for duplicate Ref statements
+    // Check if this line defines a relationship - skip duplicates
     const refMatch = line.match(/Ref:\s*([^\s.]+)\.(\w+)\s*([<>]|-)\s*([^\s.]+)\._id/);
     if (refMatch) {
       const refKey = `${refMatch[1]}.${refMatch[2]}-${refMatch[4]}._id`;
       if (seenRefs.has(refKey)) {
         console.log(`Removing duplicate Ref: ${line.trim()}`);
-        continue;
+        continue; // Skip this duplicate relationship
       }
       seenRefs.add(refKey);
     }
@@ -88,21 +312,32 @@ function dedupDbml(dbml: string): string {
   return processedLines.join('\n');
 }
 
-// Generate a short summary from a question for tab titles
-// E.g., "Show me tables involved in managing PA availability" -> "PA availability"
+/**
+ * Creates Short Tab Titles from Questions
+ *
+ * When users ask Table Finder questions, we create tabs for each query.
+ * This function shortens long questions into concise tab titles.
+ *
+ * Example:
+ * Input: "Show me tables involved in managing PA availability"
+ * Output: "PA availability"
+ *
+ * It removes common question words like "What", "Show me", etc.
+ * and strips out filler words to keep just the key topic.
+ */
 function generateSummaryFromQuestion(question: string): string {
-  // Remove common prefixes like "Show me", "What", "Which", "Tell me about"
+  // Remove common question prefixes like "Show me", "What", "Which"
   let summary = question
     .replace(/^(show me|what|which|tell me about|what are|which are|find|identify)\s+/i, '')
     .replace(/\?$/, '') // Remove trailing question mark
     .trim();
 
-  // Remove common phrases
+  // Remove filler words that don't add meaning to the title
   summary = summary
     .replace(/\s+(tables|involved in|are the|related to|for|in|the|that)\s+/gi, ' ')
     .trim();
 
-  // Limit to reasonable length
+  // Keep titles short for the tab UI (max 40 characters)
   if (summary.length > 40) {
     summary = summary.substring(0, 40) + '...';
   }
@@ -110,32 +345,75 @@ function generateSummaryFromQuestion(question: string): string {
   return summary || 'Tables';
 }
 
+/**
+ * Converts Standard Database Types to Bubble-Friendly Types
+ *
+ * Bubble.io uses its own type naming system that's simpler than standard SQL.
+ * This function transforms DBML to use Bubble-style type names for display.
+ *
+ * TYPE CONVERSIONS:
+ * - int, decimal, float, etc. -> "number"
+ * - boolean, bool -> "Y_N" (Bubble's yes/no type)
+ * - datetime, timestamp -> "date"
+ * - varchar -> "text"
+ * - Fields ending in _id -> "unique" (marks foreign keys)
+ *
+ * Also handles inline references by extracting the table name:
+ * - user_id text [ref: > user._id] -> user_id user [ref: > user._id]
+ */
 function convertDbmlToBubbleTypes(dbml: string): string {
-  // Replace DBML types with Bubble types in the entire DBML
   let converted = dbml;
 
-  // Handle inline Ref relationships: field_name text [ref: > table._id]
-  // Replace the field's type with the referenced table name
-  // Pattern: any word characters (field), any type, [ref: > table._id] -> replace type with table name
+  // Handle inline Ref relationships - extract the table name from the reference
+  // Example: user_id text [ref: > user._id] -> user_id user [ref: > user._id]
   converted = converted.replace(/(\w+)\s+\w+\s+(\[ref:\s*>\s*(\w+)\.)/g, '$1 $3 $2');
 
-  // Replace type declarations: field_name oldType -> field_name newType
-  // Do numeric types first (more specific)
+  // Convert numeric types to Bubble's "number" type
   converted = converted.replace(/\b(decimal|float|double|numeric|integer)\b(?=\s*[\[\n;])/gi, 'number');
+  // Convert boolean to Bubble's "Y_N" (yes/no) type
   converted = converted.replace(/\bbool(?:ean)?\b(?=\s*[\[\n;])/gi, 'Y_N');
+  // Convert date/time types to Bubble's "date" type
   converted = converted.replace(/\b(datetime|timestamp|date|time)\b(?=\s*[\[\n;])/gi, 'date');
+  // Convert varchar to "text"
   converted = converted.replace(/\bvarchar\b(?=\s*[\[\n;])/gi, 'text');
+  // Convert int to "number"
   converted = converted.replace(/\bint(?:eger)?\b(?=\s*[\[\n;])/gi, 'number');
 
-  // Replace types for fields ending in _id or _ID with "unique"
+  // Ensure all _id fields show as "unique" (indicates foreign key relationship)
   converted = converted.replace(/(\w*_id)\s+(number|text|int|integer|unique)\b/gi, '$1 unique');
 
-  // Replace standalone "id" fields with "unique"
+  // Ensure standalone "id" field (primary key) shows as "unique"
   converted = converted.replace(/\bid\s+(number|text|int|integer|unique)\b/gi, 'id unique');
 
   return converted;
 }
 
+/**
+ * Parses DBML Text into Structured Data
+ *
+ * Takes raw DBML text and extracts all the meaningful information into
+ * JavaScript objects that can be used by the UI.
+ *
+ * WHAT IT EXTRACTS:
+ * - tables: All table definitions with their fields
+ * - tableNotes: Table-level descriptions (Note: "...")
+ * - fieldNotes: Field-level descriptions
+ * - raw: The original DBML text
+ *
+ * EXAMPLE INPUT:
+ *   Table user {
+ *     Note: "Stores user accounts"
+ *     _id unique [Note: "Primary key"]
+ *     email text [Note: "User email"]
+ *   }
+ *
+ * EXAMPLE OUTPUT:
+ *   {
+ *     tables: { user: [{ name: "_id", type: "unique" }, { name: "email", type: "text" }] },
+ *     tableNotes: { user: "Stores user accounts" },
+ *     fieldNotes: { user: { _id: "Primary key", email: "User email" } }
+ *   }
+ */
 function parseDbml(dbml: string): {
   tables: { [key: string]: TableField[] };
   tableNotes: { [tableName: string]: string };
@@ -146,6 +424,7 @@ function parseDbml(dbml: string): {
   const tableNotes: { [tableName: string]: string } = {};
   const fieldNotes: { [tableName: string]: { [fieldName: string]: string } } = {};
 
+  // Find all Table definitions in the DBML
   const tableMatches = dbml.matchAll(/Table\s+(?:"([^"]+)"|(\w+))\s*\{([^}]*)\}/g);
 
   for (const match of tableMatches) {
@@ -153,20 +432,20 @@ function parseDbml(dbml: string): {
     const tableBody = match[3];
     const fields: TableField[] = [];
 
-    // Extract table-level note
+    // Look for table-level Note: "description"
     const tableNoteMatch = tableBody.match(/^\s*Note:\s*"([^"]+)"/m);
     if (tableNoteMatch) {
       tableNotes[tableName] = tableNoteMatch[1];
     }
 
-    // Split table body into lines for better field parsing
+    // Parse each line in the table body to extract fields
     const lines = tableBody.split('\n');
 
     for (const line of lines) {
-      // Skip empty lines and table notes
+      // Skip empty lines and Note: lines (not field definitions)
       if (!line.trim() || line.trim().startsWith('Note:')) continue;
 
-      // Match field definition: field_name type [optional constraints]
+      // Match field pattern: field_name type [optional constraints]
       const fieldMatch = line.match(/^\s*(\w+)\s+([^\[\n]+?)(?:\s*\[([^\]]*)\])?$/);
       if (!fieldMatch) continue;
 
@@ -174,18 +453,17 @@ function parseDbml(dbml: string): {
       let fieldType = fieldMatch[2].trim();
       const constraints = fieldMatch[3] || "";
 
-      // Skip if not a valid field
+      // Skip invalid entries
       if (!fieldName || !fieldType || fieldName === "Note") continue;
 
-      // Include constraints in the type field to preserve them
+      // Preserve constraints in the type string for display
       if (constraints) {
         fieldType += ` [${constraints}]`;
       }
 
       fields.push({ name: fieldName, type: fieldType });
 
-      // Extract field-level note from constraints
-      // Match: Note: "any text here"
+      // Extract field-level note from constraints for descriptions
       const fieldNoteMatch = constraints.match(/Note:\s*"([^"]*?)"/);
       if (fieldNoteMatch && fieldNoteMatch[1]) {
         if (!fieldNotes[tableName]) {
@@ -201,11 +479,27 @@ function parseDbml(dbml: string): {
   return { tables, tableNotes, fieldNotes, raw: dbml };
 }
 
+/**
+ * Compares Two Schemas to Find What's New
+ *
+ * When a user plans a new feature, Claude generates new tables and fields.
+ * This function compares the proposed schema against the current one to
+ * identify exactly what's being added.
+ *
+ * RETURNS:
+ * - newTables: Tables that don't exist in the current schema
+ * - newFields: New fields being added to existing tables
+ * - tableDescriptions: Descriptions for the new/modified tables
+ *
+ * This information is displayed to the user so they can see exactly
+ * what changes would be made to their database if they accept the proposal.
+ */
 function analyzeChanges(
   currentDbml: string,
   proposedDbml: string,
   bubbleFieldTypes?: { [tableName: string]: { [fieldName: string]: string } }
 ): SchemaChange {
+  // Parse both schemas into structured data for comparison
   const current = parseDbml(currentDbml);
   const proposed = parseDbml(proposedDbml);
 
@@ -434,15 +728,8 @@ interface FetchState {
     newFieldTableOrder?: string[];
     tableNameMap?: { [oldName: string]: string };
   };
-  // State for chat-based database queries feature
-  chatWithDb?: {
-    status: "idle" | "chatting" | "error";
-    messages: ChatMessage[];
-    currentSchemaContext: "current" | "proposed" | null;
-    activeTab: "plan-feature" | "chat-db" | "table-finder";
-    error?: string;
-  };
   // State for table finder feature (identifying tables involved in features)
+  activeTab?: "plan-feature" | "table-finder" | "schema-analysis";
   tableFinder?: {
     status: "idle" | "searching" | "success" | "error";
     messages: TableFinderMessage[];
@@ -454,10 +741,28 @@ interface FetchState {
       embedUrl: string;
       dbml: string;
       explanation: string;
+      tableExplanations?: { table: string; explanation: string }[];
     }>;
     activeResultId?: string;
     error?: string;
   };
+  // State for schema analysis feature (detecting structural issues)
+  schemaAnalysis?: {
+    status: "idle" | "analyzing" | "success" | "error";
+    result?: SchemaAnalysisResult;
+    error?: string;
+    filterBySeverity?: IssueSeverity | null; // null means show all
+    refactoringIssueId?: string | null; // ID of issue currently being refactored
+  };
+  // State for diagram tabs (original + refactored versions)
+  diagramTabs?: {
+    id: string;
+    title: string;
+    embedUrl: string;
+    dbml: string;
+    isOriginal?: boolean;
+  }[];
+  activeDiagramTabId?: string;
 }
 
 function convertChangesToDbml(
@@ -960,7 +1265,7 @@ function generateTableDbml(
   return dbml;
 }
 
-export default function Home() {
+function HomeContent() {
   const [url, setUrl] = useState("");
   const [fetchState, setFetchState] = useState<FetchState>({ status: "idle" });
   const [loadingStep, setLoadingStep] = useState(1);
@@ -970,6 +1275,20 @@ export default function Home() {
   const [sidebarWidth, setSidebarWidth] = useState(384); // w-96 = 384px
   const [isDragging, setIsDragging] = useState(false);
   const [expandedSchemaTables, setExpandedSchemaTables] = useState<Set<string>>(new Set());
+
+  // URL parameter to override the database health score (for testing/demos)
+  // Usage: ?score=50 to show what the UI looks like at 50% health
+  const searchParams = useSearchParams();
+  const scoreOverride = searchParams.get("score");
+  const getDisplayScore = (actualScore: number) => {
+    if (scoreOverride) {
+      const override = parseInt(scoreOverride, 10);
+      if (!isNaN(override) && override >= 0 && override <= 100) {
+        return override;
+      }
+    }
+    return actualScore;
+  };
 
   const toggleTable = (tableName: string) => {
     const newExpanded = new Set(expandedTables);
@@ -1078,19 +1397,6 @@ export default function Home() {
     }
   }, [fetchState.status]);
 
-  // Auto-scroll to bottom of chat when new messages arrive
-  useEffect(() => {
-    if (fetchState.chatWithDb?.messages.length && fetchState.chatWithDb.activeTab === "chat-db") {
-      const chatContainer = document.getElementById("chat-messages");
-      if (chatContainer) {
-        // Use setTimeout to ensure the DOM has updated before scrolling
-        setTimeout(() => {
-          chatContainer.scrollTop = chatContainer.scrollHeight;
-        }, 0);
-      }
-    }
-  }, [fetchState.chatWithDb?.messages.length, fetchState.chatWithDb?.activeTab]);
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -1154,12 +1460,25 @@ export default function Home() {
         const diagramData = await diagramResponse.json();
         console.log("Diagram response:", diagramData);
 
+        // Create the original diagram tab
+        const originalTabId = `original-${Date.now()}`;
         setFetchState({
           status: "success",
           data: data.dbml,
           embedUrl: diagramData.embedUrl,
           diagramLoading: false,
+          diagramTabs: [{
+            id: originalTabId,
+            title: "Original Schema",
+            embedUrl: diagramData.embedUrl,
+            dbml: data.dbml,
+            isOriginal: true,
+          }],
+          activeDiagramTabId: originalTabId,
         });
+
+        // Automatically trigger schema analysis after successful load
+        handleAnalyzeSchema(data.dbml);
       } catch (diagramError) {
         console.error("Failed to create diagram:", diagramError);
         setFetchState({
@@ -1167,6 +1486,9 @@ export default function Home() {
           data: data.dbml,
           diagramLoading: false,
         });
+
+        // Still trigger schema analysis even if diagram creation failed
+        handleAnalyzeSchema(data.dbml);
       }
     } catch (error) {
       const errorMessage =
@@ -1326,11 +1648,6 @@ export default function Home() {
         ...prev.featurePlanning!,
         activeView: view,
       },
-      // Update chat context when switching views
-      chatWithDb: prev.chatWithDb ? {
-        ...prev.chatWithDb,
-        currentSchemaContext: view,
-      } : undefined,
     }));
   };
 
@@ -1344,50 +1661,15 @@ export default function Home() {
     setFeatureDescription("");
   };
 
-  // Determine which schema the chat should reference based on current state
-  // Returns "current" if no feature planning, or the activeView when planning is active
-  const determineSchemaContext = (state: FetchState): "current" | "proposed" | null => {
-    // No schema loaded yet
-    if (!state.data) return null;
-
-    // If feature planning is active, use the view they're currently looking at
-    if (state.featurePlanning?.status === "success") {
-      return state.featurePlanning.activeView || "current";
-    }
-
-    // Default to current schema
-    return "current";
-  };
-
-  // Switch between "Plan a Feature" and "Chat with Database" tabs in the sidebar
-  const handleTabChange = (tab: "plan-feature" | "chat-db" | "table-finder") => {
+  // Switch between "Plan a Feature", "Table Finder", and "Schema Analysis" tabs in the sidebar
+  const handleTabChange = (tab: "plan-feature" | "table-finder" | "schema-analysis") => {
     setFetchState(prev => {
-      // Initialize chat state if switching to chat for the first time
-      if (tab === "chat-db" && !prev.chatWithDb) {
-        return {
-          ...prev,
-          chatWithDb: {
-            status: "idle",
-            messages: [],
-            currentSchemaContext: determineSchemaContext(prev),
-            activeTab: tab,
-          },
-        };
-      }
-
       // Initialize table finder state if switching to it for the first time
       if (tab === "table-finder" && !prev.tableFinder) {
         console.log("✓ Initializing table-finder tab");
         return {
           ...prev,
-          chatWithDb: {
-            ...(prev.chatWithDb || {
-              status: "idle",
-              messages: [],
-              currentSchemaContext: null,
-            }),
-            activeTab: tab,
-          },
+          activeTab: tab,
           tableFinder: {
             status: "idle",
             messages: [],
@@ -1396,132 +1678,406 @@ export default function Home() {
         };
       }
 
-      // Just update active tab if chat or table finder already exists
-      if (prev.chatWithDb) {
-        if (tab === "table-finder") {
-          console.log("✓ Switching to table-finder tab");
-        }
+      // Initialize schema analysis state if switching to it for the first time
+      if (tab === "schema-analysis" && !prev.schemaAnalysis) {
+        console.log("✓ Initializing schema-analysis tab");
         return {
           ...prev,
-          chatWithDb: {
-            ...prev.chatWithDb,
-            activeTab: tab,
-            currentSchemaContext: tab === "chat-db" ? determineSchemaContext(prev) : prev.chatWithDb.currentSchemaContext,
+          activeTab: tab,
+          schemaAnalysis: {
+            status: "idle",
           },
         };
       }
 
-      return prev;
+      // Just update active tab
+      if (tab === "table-finder") {
+        console.log("✓ Switching to table-finder tab");
+      } else if (tab === "schema-analysis") {
+        console.log("✓ Switching to schema-analysis tab");
+      }
+      return {
+        ...prev,
+        activeTab: tab,
+      };
     });
   };
 
-  // Send a message to the chat API and get a response
-  const handleSendMessage = async (message: string) => {
-    if (!message.trim()) return;
+  // Analyze the current schema for structural issues using Claude AI
+  // This function is called automatically when a schema is loaded
+  const handleAnalyzeSchema = async (dbml: string) => {
+    console.log("↓ Schema Analysis: Starting analysis...");
 
-    // Determine which schema to use for this chat
-    const schemaContext = determineSchemaContext(fetchState);
-    if (!schemaContext) {
-      console.error("No schema available for chat");
-      return;
-    }
-
-    // Get the DBML for the current schema context
-    const dbmlToUse = schemaContext === "proposed"
-      ? fetchState.featurePlanning!.generatedDbml!
-      : fetchState.data!;
-
-    // Create a user message object to add to the chat
-    const userMessage: ChatMessage = {
-      id: `user-${Date.now()}`,
-      role: "user",
-      content: message.trim(),
-      timestamp: Date.now(),
-      schemaContext,
-    };
-
-    // Update state immediately with user message (for responsive UI)
+    // Set analyzing status
     setFetchState(prev => ({
       ...prev,
-      chatWithDb: {
-        ...prev.chatWithDb!,
-        status: "chatting",
-        messages: [...prev.chatWithDb!.messages, userMessage],
+      schemaAnalysis: {
+        status: "analyzing",
       },
     }));
 
     try {
-      // Prepare conversation history (last 6 messages = 3 exchanges) for context
-      const conversationHistory = fetchState.chatWithDb!.messages
-        .slice(-6)
-        .map(msg => ({
-          role: msg.role,
-          content: msg.content,
-        }));
-
-      // Call the chat API endpoint
-      const response = await fetch("/api/chat-db", {
+      const response = await fetch("/api/analyze-schema", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          dbml: dbmlToUse,
-          message: message.trim(),
-          schemaType: schemaContext,
-          conversationHistory,
-        }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dbml }),
       });
 
-      const data = await response.json();
-
       if (!response.ok) {
-        throw new Error(data.error || "Failed to get response");
+        const errorData = await response.json();
+        throw new Error(errorData.error || "Analysis failed");
       }
 
-      // Create assistant message to add to chat
-      const assistantMessage: ChatMessage = {
-        id: `assistant-${Date.now()}`,
-        role: "assistant",
-        content: data.response,
-        timestamp: Date.now(),
-        schemaContext,
-      };
+      const data = await response.json();
+      console.log("✓ Schema Analysis: Found", data.issues?.length || 0, "issues");
+      console.log("✓ Schema Analysis: Scores -", data.scores);
 
-      // Update state with assistant's response
       setFetchState(prev => ({
         ...prev,
-        chatWithDb: {
-          ...prev.chatWithDb!,
-          status: "idle",
-          messages: [...prev.chatWithDb!.messages, assistantMessage],
-          error: undefined,
+        schemaAnalysis: {
+          status: "success",
+          result: {
+            performance: data.performance ?? 50,
+            issues: data.issues,
+            summary: data.summary,
+            analyzedAt: Date.now(),
+          },
         },
       }));
     } catch (error) {
-      // Handle any errors that occur during the API call
-      const errorMessage = error instanceof Error ? error.message : "An error occurred";
+      const errorMessage = error instanceof Error
+        ? error.message
+        : "An error occurred during analysis";
+
+      console.error("✗ Schema Analysis: Error -", errorMessage);
 
       setFetchState(prev => ({
         ...prev,
-        chatWithDb: {
-          ...prev.chatWithDb!,
+        schemaAnalysis: {
           status: "error",
           error: errorMessage,
         },
       }));
+    }
+  };
 
-      // Auto-clear error after 5 seconds
-      setTimeout(() => {
-        setFetchState(prev => ({
-          ...prev,
-          chatWithDb: prev.chatWithDb ? {
-            ...prev.chatWithDb,
-            status: "idle",
-            error: undefined,
-          } : undefined,
-        }));
-      }, 5000);
+  // Refactor the schema based on a specific performance issue
+  // Uses the edit-dbml API to generate updated DBML, then updates the diagram
+  // Helper function to extract a single table's DBML from the full schema
+  // This allows us to send only the relevant table to the API for refactoring
+  const extractTableDbml = (fullDbml: string, tableName: string): string | null => {
+    // Match a table definition, handling both quoted and unquoted table names
+    // Also handles tables with Notes that may contain braces
+    const lines = fullDbml.split('\n');
+    let inTargetTable = false;
+    let braceCount = 0;
+    const tableLines: string[] = [];
+
+    for (const line of lines) {
+      // Check if this line starts the target table
+      const tableMatch = line.match(/^Table\s+(?:"([^"]+)"|(\w+))\s*\{?/);
+      if (tableMatch) {
+        const matchedName = tableMatch[1] || tableMatch[2];
+        if (matchedName === tableName) {
+          inTargetTable = true;
+          braceCount = (line.match(/\{/g) || []).length - (line.match(/\}/g) || []).length;
+          tableLines.push(line);
+          continue;
+        }
+      }
+
+      if (inTargetTable) {
+        tableLines.push(line);
+        braceCount += (line.match(/\{/g) || []).length - (line.match(/\}/g) || []).length;
+
+        // When braces are balanced, we've reached the end of the table
+        if (braceCount <= 0) {
+          break;
+        }
+      }
+    }
+
+    return tableLines.length > 0 ? tableLines.join('\n') : null;
+  };
+
+  const handleRefactorIssue = async (issue: SchemaIssue) => {
+    if (!fetchState.data) {
+      console.error("No schema available for refactoring");
+      return;
+    }
+
+    console.log("↓ Refactoring: Starting refactor for issue:", issue.title);
+
+    // Set refactoring state
+    setFetchState(prev => ({
+      ...prev,
+      schemaAnalysis: prev.schemaAnalysis ? {
+        ...prev.schemaAnalysis,
+        refactoringIssueId: issue.id,
+      } : undefined,
+    }));
+
+    try {
+      // Get the primary affected table name from the issue
+      const primaryTableName = issue.affectedTables?.[0];
+      if (!primaryTableName) {
+        throw new Error("No affected table specified for refactoring");
+      }
+
+      console.log("=== REFACTOR DEBUG ===");
+      console.log("primaryTableName:", primaryTableName);
+      console.log("fetchState.data exists:", !!fetchState.data);
+      console.log("fetchState.data length:", fetchState.data?.length);
+      console.log("fetchState.data type:", typeof fetchState.data);
+      console.log("fetchState.data first 500 chars:", fetchState.data?.substring(0, 500));
+
+      // Check if the table name exists anywhere in the DBML
+      if (fetchState.data) {
+        const tablePattern = new RegExp(`Table\\s+${primaryTableName}\\s*\\{`, 'g');
+        const matches = fetchState.data.match(tablePattern);
+        console.log(`Looking for pattern: Table ${primaryTableName} {`);
+        console.log("Pattern matches found:", matches?.length || 0, matches);
+      }
+
+      // Extract just the affected table's DBML (optimization: send ~90% fewer tokens)
+      const tableDbml = extractTableDbml(fetchState.data, primaryTableName);
+      console.log("Extracted tableDbml:", tableDbml ? `${tableDbml.length} chars` : "NULL");
+      console.log("Extracted tableDbml preview:", tableDbml?.substring(0, 300) || "NULL");
+
+      if (!tableDbml) {
+        throw new Error(`Could not find table "${primaryTableName}" in schema`);
+      }
+
+      // Get all existing table names to help Claude avoid name collisions
+      const existingTables = parseDbml(fetchState.data);
+      const existingTableNames = Object.keys(existingTables.tables);
+
+      console.log(`Sending optimized payload: ${tableDbml.length} chars (vs ${fetchState.data.length} full schema)`);
+
+      // Call the optimized refactor-schema API with just the affected table
+      const refactorResponse = await fetch("/api/refactor-schema", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          tableDbml,
+          tableName: primaryTableName,
+          existingTableNames,
+          issue: {
+            title: issue.title,
+            category: issue.category,
+            severity: issue.severity,
+            description: issue.description,
+            affectedTables: issue.affectedTables,
+            affectedFields: issue.affectedFields,
+            recommendation: issue.recommendation,
+          },
+        }),
+      });
+
+      if (!refactorResponse.ok) {
+        const errorData = await refactorResponse.json();
+        throw new Error(errorData.error || "Failed to refactor schema");
+      }
+
+      const refactorData = await refactorResponse.json();
+      let refactoredTableDbml = refactorData.refactoredDbml;
+      const newTableNames = refactorData.newTableNames || [];
+
+      if (!refactoredTableDbml) {
+        throw new Error("No refactored schema returned");
+      }
+
+      console.log(`Received refactored tables: ${newTableNames.length} new tables`);
+
+      // Deduplicate the refactored tables DBML to remove any duplicate fields
+      refactoredTableDbml = dedupDbml(refactoredTableDbml);
+
+      // Remove self-referencing fields and refs (e.g., user_financial referencing user_financial)
+      // These are invalid and cause diagram errors
+      const refactoredLines = refactoredTableDbml.split('\n');
+      const cleanedLines: string[] = [];
+      let currentTable = '';
+
+      for (const line of refactoredLines) {
+        // Track current table
+        const tableMatch = line.match(/^Table\s+(?:"([^"]+)"|(\w+))/);
+        if (tableMatch) {
+          currentTable = tableMatch[1] || tableMatch[2];
+          cleanedLines.push(line);
+          continue;
+        }
+
+        // Check for self-referencing inline refs in field definitions
+        // Pattern: field_name type [ref: > same_table._id]
+        if (currentTable && line.includes('[ref:')) {
+          const refMatch = line.match(/\[ref:\s*>\s*(\w+)\./);
+          if (refMatch && refMatch[1] === currentTable) {
+            // Remove the self-reference but keep the field
+            const cleanedLine = line.replace(/\s*\[ref:[^\]]*\]/, '');
+            console.log(`Removing self-reference in table ${currentTable}:`, line.trim());
+            cleanedLines.push(cleanedLine);
+            continue;
+          }
+        }
+
+        // Check for self-referencing standalone Ref statements
+        // Pattern: Ref: table.field > table._id
+        const standAloneRefMatch = line.match(/^Ref:\s*(\w+)\.(\w+)\s*>\s*(\w+)\./);
+        if (standAloneRefMatch && standAloneRefMatch[1] === standAloneRefMatch[3]) {
+          console.log(`Removing self-referencing Ref:`, line.trim());
+          continue; // Skip this line entirely
+        }
+
+        cleanedLines.push(line);
+      }
+      refactoredTableDbml = cleanedLines.join('\n');
+
+      // Now merge the refactored tables back into the full schema:
+      // 1. Remove the original table from the full schema
+      // 2. Add the refactored tables (which include the modified original + new split tables)
+      const fullSchemaLines = fetchState.data.split('\n');
+      const mergedLines: string[] = [];
+      let inOriginalTable = false;
+      let braceCount = 0;
+
+      for (const line of fullSchemaLines) {
+        // Check if this line starts the table we're removing
+        const tableMatch = line.match(/^Table\s+(?:"([^"]+)"|(\w+))\s*\{?/);
+        if (tableMatch) {
+          const matchedName = tableMatch[1] || tableMatch[2];
+          if (matchedName === primaryTableName) {
+            inOriginalTable = true;
+            braceCount = (line.match(/\{/g) || []).length - (line.match(/\}/g) || []).length;
+            continue; // Skip this line (start of table to remove)
+          }
+        }
+
+        if (inOriginalTable) {
+          braceCount += (line.match(/\{/g) || []).length - (line.match(/\}/g) || []).length;
+          if (braceCount <= 0) {
+            inOriginalTable = false; // End of the table we're removing
+          }
+          continue; // Skip all lines of the table being removed
+        }
+
+        mergedLines.push(line);
+      }
+
+      // Add the refactored tables at the end (before any Ref statements)
+      // Find where Ref statements start (if any)
+      let insertIndex = mergedLines.length;
+      for (let i = 0; i < mergedLines.length; i++) {
+        if (mergedLines[i].startsWith('Ref:')) {
+          insertIndex = i;
+          break;
+        }
+      }
+
+      // Insert refactored tables
+      mergedLines.splice(insertIndex, 0, '', refactoredTableDbml);
+
+      let refactoredDbml = mergedLines.join('\n');
+
+      // The new tables are already known from the API response
+      const newTables = newTableNames;
+
+      // Add a TableGroup to highlight the refactored table AND newly created tables
+      if (newTables.length > 0) {
+        // Generate a descriptive name from the affected tables (e.g., "Refactored User Tables")
+        // Use the first affected table name and format it nicely
+        // Get the primary table from the issue, handling edge cases
+        const primaryTable = (issue.affectedTables && issue.affectedTables.length > 0)
+          ? issue.affectedTables[0]
+          : newTables[0];
+
+        console.log("TableGroup Debug:", {
+          issueAffectedTables: issue.affectedTables,
+          primaryTable,
+          newTables,
+          issueTitle: issue.title,
+        });
+
+        const formattedName = primaryTable
+          .split('_')
+          .map((word: string) => word.charAt(0).toUpperCase() + word.slice(1))
+          .join(' ');
+        const tableGroupName = `Refactored ${formattedName} Tables`;
+
+        // Include the original refactored table + all new tables in the group
+        const allRelatedTables = [primaryTable, ...newTables];
+        console.log("All tables for TableGroup:", allRelatedTables);
+
+        const tableList = allRelatedTables.map(t => `  ${t}`).join("\n");
+        const tableGroup = `\n\nTableGroup "${tableGroupName}" [color: #FFBD94] {\n${tableList}\n  Note: '''Refactored tables for: ${issue.title}'''\n}`;
+        console.log("Generated TableGroup:", tableGroup);
+
+        refactoredDbml = refactoredDbml.trimEnd() + tableGroup;
+      }
+
+      // Strip ALL standalone Ref statements - refs should only be inline within tables
+      refactoredDbml = refactoredDbml.replace(/^Ref:\s*[^\n]+\n?/gm, '');
+      refactoredDbml = refactoredDbml.trim();
+
+      console.log("✓ Refactoring: Generated new schema");
+      console.log("DBML ends with (last 500 chars):", refactoredDbml.slice(-500));
+
+      // Now create a new diagram with the refactored schema
+      const diagramResponse = await fetch("/api/diagram", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dbml: refactoredDbml }),
+      });
+
+      if (!diagramResponse.ok) {
+        throw new Error("Failed to create diagram for refactored schema");
+      }
+
+      const diagramData = await diagramResponse.json();
+      console.log("✓ Refactoring: Created new diagram");
+
+      // Generate tab title in snake_case (e.g., "refactor_user_tables")
+      const primaryTable = issue.affectedTables[0] || "schema";
+      const tabTitle = `refactor_${primaryTable}_tables`;
+      const newTabId = `refactor-${Date.now()}`;
+
+      // Add new tab for the refactored diagram (don't replace original)
+      setFetchState(prev => ({
+        ...prev,
+        schemaAnalysis: prev.schemaAnalysis ? {
+          ...prev.schemaAnalysis,
+          refactoringIssueId: null,
+        } : undefined,
+        // Add new diagram tab and make it active
+        diagramTabs: [
+          ...(prev.diagramTabs || []),
+          {
+            id: newTabId,
+            title: tabTitle,
+            embedUrl: diagramData.embedUrl,
+            dbml: refactoredDbml,
+            isOriginal: false,
+          },
+        ],
+        activeDiagramTabId: newTabId,
+      }));
+      // Don't re-run schema analysis - user can do that manually if needed
+
+    } catch (error) {
+      const errorMessage = error instanceof Error
+        ? error.message
+        : "An error occurred during refactoring";
+
+      console.error("✗ Refactoring: Error -", errorMessage);
+
+      // Clear refactoring state and show error
+      setFetchState(prev => ({
+        ...prev,
+        schemaAnalysis: prev.schemaAnalysis ? {
+          ...prev.schemaAnalysis,
+          refactoringIssueId: null,
+          error: errorMessage,
+        } : undefined,
+      }));
     }
   };
 
@@ -1601,25 +2157,24 @@ export default function Home() {
         embedUrl: diagramData.embedUrl,
         dbml: data.updatedDbml,
         explanation: data.explanation,
+        tableExplanations: data.tableExplanations || [],
       };
 
       // Create assistant message with explanation and matched tables
       const assistantMessage: TableFinderMessage = {
         id: `assistant-${Date.now()}`,
         role: "assistant",
-        content: data.explanation,
+        content: "",
         timestamp: Date.now(),
         tableGroups: [data.tableGroupName],
         matchedTables: data.matchedTables,
+        tableExplanations: data.tableExplanations || [],
       };
 
       // Update state with assistant response and new diagram
       setFetchState(prev => ({
         ...prev,
-        chatWithDb: {
-          ...(prev.chatWithDb || { status: "idle", messages: [], currentSchemaContext: null }),
-          activeTab: "table-finder",
-        },
+        activeTab: "table-finder",
         tableFinder: {
           ...(prev.tableFinder || { status: "idle", messages: [], results: [] }),
           status: "success" as const,
@@ -1642,19 +2197,6 @@ export default function Home() {
         },
       }));
     }
-  };
-
-  // Clear all messages from the chat and reset to idle state
-  const handleClearChat = () => {
-    setFetchState(prev => ({
-      ...prev,
-      chatWithDb: prev.chatWithDb ? {
-        ...prev.chatWithDb,
-        messages: [],
-        status: "idle",
-        error: undefined,
-      } : undefined,
-    }));
   };
 
   const handleTableNameChange = (
@@ -2348,20 +2890,20 @@ export default function Home() {
                     ) : (
                       <>
                         {(() => {
-                          const isTableFinderTab = fetchState.chatWithDb?.activeTab === "table-finder";
+                          const isTableFinderTab = fetchState.activeTab === "table-finder";
                           const hasSuccess = fetchState.tableFinder?.status === "success";
                           const hasActiveResult = !!fetchState.tableFinder?.activeResultId;
                           console.log("Main area condition check:", {
                             isTableFinderTab,
                             hasSuccess,
                             hasActiveResult,
-                            activeTab: fetchState.chatWithDb?.activeTab,
+                            activeTab: fetchState.activeTab,
                             tableFinder: fetchState.tableFinder,
                           });
                           return null;
                         })()}
                         {/* Show table finder diagram if table-finder tab is active and results exist */}
-                        {fetchState.chatWithDb?.activeTab === "table-finder" && fetchState.tableFinder?.status === "success" && fetchState.tableFinder.activeResultId ? (
+                        {fetchState.activeTab === "table-finder" && fetchState.tableFinder?.status === "success" && fetchState.tableFinder.activeResultId ? (
                           <>
                             {(() => {
                               const activeResult = fetchState.tableFinder?.results.find(r => r.id === fetchState.tableFinder?.activeResultId);
@@ -2407,24 +2949,72 @@ export default function Home() {
                               </>
                             ) : (
                               <>
-                                {fetchState.embedUrl ? (
-                                  <iframe
-                                    src={fetchState.embedUrl}
-                                    className="w-full flex-1 border-0 rounded-[9px]"
-                                    title="Database Diagram"
-                                    allow="fullscreen"
-                                    sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
-                                    onLoad={() => console.log("Iframe loaded:", fetchState.embedUrl)}
-                                    onError={() => {
-                                      console.error("Iframe failed to load:", fetchState.embedUrl);
-                                      setFetchState(prev => ({...prev, iframeError: true}));
-                                    }}
-                                  />
-                                ) : (
-                                  <div className="flex-1 p-12 flex items-center justify-center">
-                                    <p className="text-zinc-600 text-sm">Diagram could not be loaded. Check browser console for details.</p>
+                                {/* Diagram Tabs - show when there are multiple tabs */}
+                                {fetchState.diagramTabs && fetchState.diagramTabs.length > 1 && (
+                                  <div className="flex gap-1 mb-2 overflow-x-auto pb-1">
+                                    {fetchState.diagramTabs.map((tab) => (
+                                      <button
+                                        key={tab.id}
+                                        onClick={() => setFetchState(prev => ({ ...prev, activeDiagramTabId: tab.id }))}
+                                        className={`px-3 py-1.5 text-xs font-medium rounded-md whitespace-nowrap transition-colors flex items-center gap-2 ${
+                                          fetchState.activeDiagramTabId === tab.id
+                                            ? "bg-zinc-900 text-white"
+                                            : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200"
+                                        }`}
+                                      >
+                                        {tab.title}
+                                        {/* Close button for non-original tabs */}
+                                        {!tab.isOriginal && (
+                                          <span
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              setFetchState(prev => {
+                                                const remainingTabs = prev.diagramTabs?.filter(t => t.id !== tab.id) || [];
+                                                const newActiveId = prev.activeDiagramTabId === tab.id
+                                                  ? remainingTabs[0]?.id
+                                                  : prev.activeDiagramTabId;
+                                                return {
+                                                  ...prev,
+                                                  diagramTabs: remainingTabs,
+                                                  activeDiagramTabId: newActiveId,
+                                                };
+                                              });
+                                            }}
+                                            className="ml-1 hover:text-red-400 cursor-pointer"
+                                          >
+                                            ×
+                                          </span>
+                                        )}
+                                      </button>
+                                    ))}
                                   </div>
                                 )}
+
+                                {/* Show active tab's iframe or fallback to embedUrl */}
+                                {(() => {
+                                  const activeTab = fetchState.diagramTabs?.find(t => t.id === fetchState.activeDiagramTabId);
+                                  const embedUrlToUse = activeTab?.embedUrl || fetchState.embedUrl;
+
+                                  return embedUrlToUse ? (
+                                    <iframe
+                                      key={embedUrlToUse}
+                                      src={embedUrlToUse}
+                                      className="w-full flex-1 border-0 rounded-[9px]"
+                                      title={activeTab?.title || "Database Diagram"}
+                                      allow="fullscreen"
+                                      sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
+                                      onLoad={() => console.log("Iframe loaded:", embedUrlToUse)}
+                                      onError={() => {
+                                        console.error("Iframe failed to load:", embedUrlToUse);
+                                        setFetchState(prev => ({...prev, iframeError: true}));
+                                      }}
+                                    />
+                                  ) : (
+                                    <div className="flex-1 p-12 flex items-center justify-center">
+                                      <p className="text-zinc-600 text-sm">Diagram could not be loaded. Check browser console for details.</p>
+                                    </div>
+                                  );
+                                })()}
                               </>
                             )}
                           </>
@@ -2455,7 +3045,7 @@ export default function Home() {
                         <button
                           onClick={() => handleTabChange("plan-feature")}
                           className={`px-3 py-2 text-xs font-medium transition-colors ${
-                            !fetchState.chatWithDb || fetchState.chatWithDb.activeTab === "plan-feature"
+                            fetchState.activeTab === "plan-feature"
                               ? "border-b-2 border-zinc-900 text-zinc-900"
                               : "text-zinc-500 hover:text-zinc-700"
                           }`}
@@ -2463,30 +3053,42 @@ export default function Home() {
                           Plan Feature
                         </button>
                         <button
-                          onClick={() => handleTabChange("chat-db")}
-                          className={`px-3 py-2 text-xs font-medium transition-colors ${
-                            fetchState.chatWithDb?.activeTab === "chat-db"
-                              ? "border-b-2 border-zinc-900 text-zinc-900"
-                              : "text-zinc-500 hover:text-zinc-700"
-                          }`}
-                        >
-                          Chat with Database
-                        </button>
-                        <button
                           onClick={() => handleTabChange("table-finder")}
                           className={`px-3 py-2 text-xs font-medium transition-colors ${
-                            fetchState.chatWithDb?.activeTab === "table-finder"
+                            fetchState.activeTab === "table-finder"
                               ? "border-b-2 border-zinc-900 text-zinc-900"
                               : "text-zinc-500 hover:text-zinc-700"
                           }`}
                         >
                           Table Finder
                         </button>
+                        <button
+                          onClick={() => handleTabChange("schema-analysis")}
+                          className={`px-3 py-2 text-xs font-medium transition-colors flex items-center gap-1 ${
+                            !fetchState.activeTab || fetchState.activeTab === "schema-analysis"
+                              ? "border-b-2 border-zinc-900 text-zinc-900"
+                              : "text-zinc-500 hover:text-zinc-700"
+                          }`}
+                        >
+                          Analysis
+                          {/* Badge showing issue count when analysis is complete */}
+                          {fetchState.schemaAnalysis?.status === "success" &&
+                           fetchState.schemaAnalysis.result &&
+                           fetchState.schemaAnalysis.result.summary.totalIssues > 0 && (
+                            <span className="px-1.5 py-0.5 text-[10px] bg-amber-100 text-amber-800 rounded-full">
+                              {fetchState.schemaAnalysis.result.summary.totalIssues}
+                            </span>
+                          )}
+                          {/* Loading indicator */}
+                          {fetchState.schemaAnalysis?.status === "analyzing" && (
+                            <span className="w-2 h-2 bg-zinc-400 rounded-full animate-pulse" />
+                          )}
+                        </button>
                       </div>
                     )}
 
                     {/* Feature Planning Tab Content */}
-                    {(!fetchState.chatWithDb || fetchState.chatWithDb.activeTab === "plan-feature") && (
+                    {fetchState.activeTab === "plan-feature" && (
                       <>
 
                     {/* Idle State */}
@@ -2974,194 +3576,52 @@ export default function Home() {
                       </>
                     )}
 
-                    {/* Chat with Database Tab Content */}
-                    {fetchState.chatWithDb?.activeTab === "chat-db" && (
-                      <div className="flex flex-col h-full">
-                        {/* Empty State - Show when no messages */}
-                        {fetchState.chatWithDb.messages.length === 0 ? (
-                          <div className="flex-1 flex flex-col items-center justify-center text-center space-y-3 py-6">
-                            <div className="text-3xl">💬</div>
-                            <h3 className="font-semibold text-sm text-zinc-900">Chat with your Database</h3>
-                            <p className="text-xs text-zinc-600">Ask questions about your schema or request improvement suggestions</p>
-                            <div className="w-full space-y-2 mt-4">
-                              <button
-                                onClick={() => handleSendMessage("What tables handle user authentication?")}
-                                className="w-full text-xs text-zinc-600 hover:text-zinc-900 border border-zinc-200 rounded px-2 py-2 transition-colors hover:bg-zinc-50"
-                              >
-                                What tables handle user authentication?
-                              </button>
-                              <button
-                                onClick={() => handleSendMessage("Suggest improvements for this schema")}
-                                className="w-full text-xs text-zinc-600 hover:text-zinc-900 border border-zinc-200 rounded px-2 py-2 transition-colors hover:bg-zinc-50"
-                              >
-                                Suggest improvements for this schema
-                              </button>
-                              <button
-                                onClick={() => handleSendMessage("Explain the relationships in this database")}
-                                className="w-full text-xs text-zinc-600 hover:text-zinc-900 border border-zinc-200 rounded px-2 py-2 transition-colors hover:bg-zinc-50"
-                              >
-                                Explain the relationships in this database
-                              </button>
-                            </div>
-                          </div>
-                        ) : (
-                          <>
-                            {/* Message List */}
-                            <div
-                              id="chat-messages"
-                              className="flex-1 overflow-y-auto space-y-2 mb-3 pr-2"
-                            >
-                              {fetchState.chatWithDb.messages.map((msg) => (
-                                <div key={msg.id} className="space-y-1">
-                                  {/* Schema Context Badge */}
-                                  <div className="text-[10px] text-zinc-500">
-                                    {msg.schemaContext === "current" ? "Current Schema" : "Proposed Schema"}
-                                  </div>
-                                  {/* Message Bubble */}
-                                  <div
-                                    className={`max-w-[85%] text-sm font-sans ${
-                                      msg.role === "user"
-                                        ? "ml-auto max-w-[80%] bg-blue-100 border border-blue-200 text-blue-900"
-                                        : "mr-auto bg-white border border-zinc-200 text-zinc-900"
-                                    } p-2 rounded-lg`}
-                                  >
-                                    {msg.role === "assistant" ? (
-                                      <ReactMarkdown
-                                        components={{
-                                          h1: ({node, ...props}) => <h1 className="font-bold mb-3 mt-2" {...props} />,
-                                          h2: ({node, ...props}) => <h2 className="font-bold mb-2 mt-2" {...props} />,
-                                          h3: ({node, ...props}) => <h3 className="font-semibold mb-2" {...props} />,
-                                          p: ({node, ...props}) => <p className="mb-3" {...props} />,
-                                          ul: ({node, ...props}) => <ul className="ml-3 space-y-1 mb-3" {...props} />,
-                                          ol: ({node, ...props}) => <ol className="ml-4 space-y-1 mb-3" {...props} />,
-                                          li: ({node, ...props}) => <li style={{listStyleType: 'disc'}} {...props} />,
-                                          code: ({node, children, ...props}: any) => <span {...props}>{children}</span>,
-                                          blockquote: ({node, ...props}) => <blockquote className="border-l-2 pl-2 italic mb-3" {...props} />,
-                                          strong: ({node, ...props}) => <strong className="font-semibold" {...props} />,
-                                          em: ({node, ...props}) => <em className="italic" {...props} />,
-                                          a: ({node, ...props}) => <a className="text-blue-600 hover:underline" target="_blank" rel="noopener noreferrer" {...props} />,
-                                          table: ({node, ...props}) => <table className="mb-3 w-full" {...props} />,
-                                          tr: ({node, ...props}) => <tr className="border-b" {...props} />,
-                                          th: ({node, ...props}) => <th className="text-left px-1 py-0.5 font-semibold" {...props} />,
-                                          td: ({node, ...props}) => <td className="text-left px-1 py-0.5" {...props} />,
-                                          hr: ({node, ...props}) => <hr className="my-3" {...props} />,
-                                        }}
-                                      >
-                                        {msg.content}
-                                      </ReactMarkdown>
-                                    ) : (
-                                      <div className="whitespace-pre-wrap">{msg.content}</div>
-                                    )}
-                                  </div>
-                                </div>
-                              ))}
-                              {/* Loading State */}
-                              {fetchState.chatWithDb.status === "chatting" && (
-                                <div className="flex gap-2 items-center">
-                                  <div className="w-2 h-2 bg-zinc-400 rounded-full animate-bounce" style={{ animationDelay: "0ms" }}></div>
-                                  <div className="w-2 h-2 bg-zinc-400 rounded-full animate-bounce" style={{ animationDelay: "150ms" }}></div>
-                                  <div className="w-2 h-2 bg-zinc-400 rounded-full animate-bounce" style={{ animationDelay: "300ms" }}></div>
-                                </div>
-                              )}
-                            </div>
-                          </>
-                        )}
-
-                        {/* Error Display */}
-                        {fetchState.chatWithDb.error && (
-                          <div className="mb-2 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-800">
-                            {fetchState.chatWithDb.error}
-                          </div>
-                        )}
-
-                        {/* Chat Input Area */}
-                        <div className="border-t border-zinc-200 pt-2 space-y-2">
-                          <textarea
-                            placeholder="Ask about your schema or request suggestions..."
-                            className="w-full p-2 border border-zinc-200 rounded text-xs resize-none focus:outline-none focus:ring-2 focus:ring-zinc-900"
-                            rows={3}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter" && !e.shiftKey) {
-                                e.preventDefault();
-                                const textarea = e.currentTarget;
-                                handleSendMessage(textarea.value);
-                                textarea.value = "";
-                              }
-                            }}
-                            id="chat-input"
-                            disabled={fetchState.chatWithDb.status === "chatting"}
-                          />
-                          <div className="flex gap-2">
-                            <button
-                              onClick={() => {
-                                const textarea = document.getElementById("chat-input") as HTMLTextAreaElement;
-                                if (textarea) {
-                                  handleSendMessage(textarea.value);
-                                  textarea.value = "";
-                                }
-                              }}
-                              disabled={fetchState.chatWithDb.status === "chatting"}
-                              className="flex-1 px-3 py-1.5 bg-zinc-900 text-white text-xs font-medium rounded hover:bg-zinc-800 disabled:bg-gray-400 transition-colors"
-                            >
-                              Send
-                            </button>
-                            {fetchState.chatWithDb.messages.length > 0 && (
-                              <button
-                                onClick={handleClearChat}
-                                className="px-2 py-1.5 border border-zinc-200 text-zinc-600 text-xs font-medium rounded hover:bg-zinc-50 transition-colors"
-                                title="Clear chat history"
-                              >
-                                Clear
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    )}
-
                     {/* Table Finder Tab Content */}
-                    {fetchState.chatWithDb?.activeTab === "table-finder" && (
+                    {fetchState.activeTab === "table-finder" && (
                       <div className="flex flex-col h-full">
                         {/* Title / Header */}
-                        <div className="mb-3 pb-2 border-b border-zinc-200">
+                        <div className="pb-2 border-b border-zinc-200">
                           <h3 className="font-semibold text-sm text-zinc-900">Find Related Tables</h3>
                           <p className="text-xs text-zinc-600 mt-1">Ask which tables are involved in a feature or workflow</p>
                         </div>
 
-                        {/* Empty State - Show when no questions asked */}
-                        {(!fetchState.tableFinder?.results || fetchState.tableFinder.results.length === 0) && (
-                          <div className="flex-1 flex flex-col items-center justify-center text-center space-y-3 py-6">
-                            <div className="text-3xl">🔍</div>
-                            <p className="text-xs text-zinc-600 px-2">Ask a question about your database to see related tables</p>
-                            <div className="w-full space-y-2 mt-4">
-                              <button
-                                onClick={() => handleTableFinderQuestion("What tables are involved in user authentication?")}
-                                className="w-full text-xs text-zinc-600 hover:text-zinc-900 border border-zinc-200 rounded px-2 py-2 transition-colors hover:bg-zinc-50"
-                              >
-                                What tables are involved in user authentication?
-                              </button>
-                              <button
-                                onClick={() => handleTableFinderQuestion("Show me tables related to billing")}
-                                className="w-full text-xs text-zinc-600 hover:text-zinc-900 border border-zinc-200 rounded px-2 py-2 transition-colors hover:bg-zinc-50"
-                              >
-                                Show me tables related to billing
-                              </button>
-                              <button
-                                onClick={() => handleTableFinderQuestion("Which tables handle order processing?")}
-                                className="w-full text-xs text-zinc-600 hover:text-zinc-900 border border-zinc-200 rounded px-2 py-2 transition-colors hover:bg-zinc-50"
-                              >
-                                Which tables handle order processing?
-                              </button>
+                        {/* Content Area - Scrollable */}
+                        <div className="flex-1 overflow-y-auto pr-2">
+                          {/* Empty State - Show when no questions asked */}
+                          {(!fetchState.tableFinder?.results || fetchState.tableFinder.results.length === 0) && (
+                            <div className="flex flex-col items-center justify-center text-center space-y-3 py-6 h-full">
+                              <div className="text-3xl">🔍</div>
+                              <p className="text-xs text-zinc-600 px-2">Ask a question about your database to see related tables</p>
+                              <div className="w-full space-y-2 mt-4">
+                                <button
+                                  onClick={() => handleTableFinderQuestion("What tables are involved in user authentication?")}
+                                  className="w-full text-xs text-zinc-600 hover:text-zinc-900 border border-zinc-200 rounded px-2 py-2 transition-colors hover:bg-zinc-50"
+                                >
+                                  What tables are involved in user authentication?
+                                </button>
+                                <button
+                                  onClick={() => handleTableFinderQuestion("Show me tables related to billing")}
+                                  className="w-full text-xs text-zinc-600 hover:text-zinc-900 border border-zinc-200 rounded px-2 py-2 transition-colors hover:bg-zinc-50"
+                                >
+                                  Show me tables related to billing
+                                </button>
+                                <button
+                                  onClick={() => handleTableFinderQuestion("Which tables handle order processing?")}
+                                  className="w-full text-xs text-zinc-600 hover:text-zinc-900 border border-zinc-200 rounded px-2 py-2 transition-colors hover:bg-zinc-50"
+                                >
+                                  Which tables handle order processing?
+                                </button>
+                              </div>
                             </div>
-                          </div>
-                        )}
+                          )}
 
-                        {/* Message History - Show previous questions */}
-                        {fetchState.tableFinder?.messages.length !== 0 && (
-                          <div className="mb-3 space-y-2 max-h-[200px] overflow-y-auto pr-2 border-t border-zinc-200 pt-2">
+                          {/* Message History - Show previous questions */}
+                          {fetchState.tableFinder?.messages.length !== 0 && (
+                            <div className="space-y-2 border-t border-zinc-200 pt-2">
                             {fetchState.tableFinder?.messages.map((msg) => (
                               <div key={msg.id} className="space-y-1">
-                                {/* Message Bubble */}
+                                {/* Message Bubble - only show if there's content */}
+                                {msg.content && (
                                 <div
                                   className={`text-sm font-sans ${
                                     msg.role === "user"
@@ -3171,8 +3631,29 @@ export default function Home() {
                                 >
                                   {msg.content}
                                 </div>
-                                {/* Matched Tables Display */}
-                                {msg.matchedTables && msg.matchedTables.length > 0 && (
+                                )}
+                                {/* Matched Tables Display with Per-Table Explanations */}
+                                {msg.tableExplanations && msg.tableExplanations.length > 0 && (
+                                  <div className="mr-auto max-w-[80%] text-xs space-y-1.5 mt-2">
+                                    <div className="text-zinc-600 font-medium">Tables found:</div>
+                                    <ul className="space-y-1">
+                                      {msg.tableExplanations.map(({ table, explanation }) => (
+                                        <li key={table} className="flex gap-2">
+                                          <span className="font-mono font-semibold text-amber-900 bg-amber-50 px-1.5 py-0.5 rounded shrink-0">
+                                            {table}
+                                          </span>
+                                          <span className="text-zinc-700">
+                                            {explanation}
+                                          </span>
+                                        </li>
+                                      ))}
+                                    </ul>
+                                  </div>
+                                )}
+
+                                {/* Fallback: Show old tag format if no table explanations */}
+                                {(!msg.tableExplanations || msg.tableExplanations.length === 0) &&
+                                 msg.matchedTables && msg.matchedTables.length > 0 && (
                                   <div className="mr-auto max-w-[80%] text-xs space-y-1">
                                     <div className="text-zinc-600 font-medium">Tables found:</div>
                                     <div className="flex flex-wrap gap-1">
@@ -3199,15 +3680,17 @@ export default function Home() {
                             )}
                           </div>
                         )}
+                        </div>
+                        {/* End of scrollable content area */}
 
-                        {/* Error Display */}
+                        {/* Error Display - Fixed at bottom */}
                         {fetchState.tableFinder?.error && (
-                          <div className="mb-2 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-800">
+                          <div className="p-2 bg-red-50 border border-red-200 rounded text-xs text-red-800">
                             {fetchState.tableFinder.error}
                           </div>
                         )}
 
-                        {/* Table Finder Input Area */}
+                        {/* Table Finder Input Area - Fixed at bottom */}
                         <div className="border-t border-zinc-200 pt-2 space-y-2">
                           <textarea
                             placeholder="Ask which tables are involved in a feature or workflow..."
@@ -3263,6 +3746,243 @@ export default function Home() {
                         </div>
                       </div>
                     )}
+
+                    {/* Database Analysis Tab Content - Default tab */}
+                    {(!fetchState.activeTab || fetchState.activeTab === "schema-analysis") && (
+                      <div className="flex flex-col h-full">
+                        {/* Header */}
+                        <div className="pb-2 border-b border-zinc-200 mb-3">
+                          <h3 className="font-semibold text-sm text-zinc-900">
+                            {url ? `${getAppNameFromUrl(url)} Database Analysis` : 'Database Analysis'}
+                          </h3>
+                          <p className="text-xs text-zinc-600 mt-1">
+                            Identifies issues with how your data is structured
+                          </p>
+                        </div>
+
+                        {/* Content Area */}
+                        <div className="flex-1 overflow-y-auto">
+                          {/* Loading State */}
+                          {fetchState.schemaAnalysis?.status === "analyzing" && (
+                            <div className="flex flex-col items-center justify-center h-32 space-y-3">
+                              <div className="flex gap-2">
+                                <div className="w-2 h-2 bg-zinc-400 rounded-full animate-bounce" style={{ animationDelay: "0ms" }}></div>
+                                <div className="w-2 h-2 bg-zinc-400 rounded-full animate-bounce" style={{ animationDelay: "150ms" }}></div>
+                                <div className="w-2 h-2 bg-zinc-400 rounded-full animate-bounce" style={{ animationDelay: "300ms" }}></div>
+                              </div>
+                              <p className="text-xs text-zinc-600">Analyzing your database structure...</p>
+                            </div>
+                          )}
+
+                          {/* Idle State - waiting for schema */}
+                          {(!fetchState.schemaAnalysis || fetchState.schemaAnalysis.status === "idle") && (
+                            <div className="flex flex-col items-center justify-center h-32 text-center space-y-2 py-4">
+                              <p className="text-sm text-zinc-600">
+                                Schema analysis will run automatically when you load a schema.
+                              </p>
+                              {fetchState.data && (
+                                <button
+                                  onClick={() => handleAnalyzeSchema(fetchState.data!)}
+                                  className="px-3 py-1.5 bg-zinc-900 text-white text-xs font-medium rounded hover:bg-zinc-800 transition-colors"
+                                >
+                                  Analyze Now
+                                </button>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Success State - No Issues */}
+                          {fetchState.schemaAnalysis?.status === "success" &&
+                           fetchState.schemaAnalysis.result?.issues.length === 0 && (
+                            <div className="space-y-4">
+                              {/* Database Health Score */}
+                              <div className="bg-white border border-green-200 rounded-lg p-4">
+                                <div className="flex items-center justify-between mb-2">
+                                  <span className="text-xs font-medium text-zinc-500 uppercase tracking-wide">Database Health</span>
+                                  <span className="text-2xl font-bold text-green-600">
+                                    {getDisplayScore(fetchState.schemaAnalysis.result?.performance ?? 98)}
+                                  </span>
+                                </div>
+                                <div className="w-full bg-zinc-100 rounded-full h-2.5 mb-3">
+                                  <div
+                                    className="h-2.5 rounded-full bg-green-500 transition-all duration-500"
+                                    style={{ width: `${getDisplayScore(fetchState.schemaAnalysis.result?.performance ?? 98)}%` }}
+                                  ></div>
+                                </div>
+                                <p className="text-sm text-zinc-600">
+                                  {getDatabaseHealthText(getDisplayScore(fetchState.schemaAnalysis.result?.performance ?? 98))}
+                                </p>
+                              </div>
+
+                              {/* Success message */}
+                              <div className="flex flex-col items-center justify-center text-center space-y-2 py-2">
+                                <div className="w-10 h-10 bg-green-100 rounded-full flex items-center justify-center">
+                                  <svg className="w-5 h-5 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                  </svg>
+                                </div>
+                                <p className="text-sm font-medium text-green-700">No issues detected</p>
+                                <p className="text-xs text-zinc-600 px-4">
+                                  Your database structure looks good.
+                                </p>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Success State - With Issues */}
+                          {fetchState.schemaAnalysis?.status === "success" &&
+                           fetchState.schemaAnalysis.result &&
+                           fetchState.schemaAnalysis.result.issues.length > 0 && (
+                            <div className="space-y-3">
+                              {/* Database Health Score - Color shifts from red to green based on score */}
+                              <div className="bg-white border border-zinc-200 rounded-lg p-4">
+                                <div className="flex items-center justify-between mb-2">
+                                  <span className="text-xs font-medium text-zinc-500 uppercase tracking-wide">Database Health</span>
+                                  <span
+                                    className="text-2xl font-bold"
+                                    style={{
+                                      color: `rgb(${Math.round(239 - 205 * getDisplayScore(fetchState.schemaAnalysis.result.performance) / 100)}, ${Math.round(68 + 129 * getDisplayScore(fetchState.schemaAnalysis.result.performance) / 100)}, ${Math.round(68 + 26 * getDisplayScore(fetchState.schemaAnalysis.result.performance) / 100)})`
+                                    }}
+                                  >
+                                    {getDisplayScore(fetchState.schemaAnalysis.result.performance)}
+                                  </span>
+                                </div>
+                                <div className="w-full bg-zinc-100 rounded-full h-2.5 mb-3">
+                                  <div
+                                    className="h-2.5 rounded-full transition-all duration-500"
+                                    style={{
+                                      width: `${getDisplayScore(fetchState.schemaAnalysis.result.performance)}%`,
+                                      backgroundColor: `rgb(${Math.round(239 - 205 * getDisplayScore(fetchState.schemaAnalysis.result.performance) / 100)}, ${Math.round(68 + 129 * getDisplayScore(fetchState.schemaAnalysis.result.performance) / 100)}, ${Math.round(68 + 26 * getDisplayScore(fetchState.schemaAnalysis.result.performance) / 100)})`
+                                    }}
+                                  ></div>
+                                </div>
+                                <p className="text-sm text-zinc-600">
+                                  {getDatabaseHealthText(getDisplayScore(fetchState.schemaAnalysis.result.performance))}
+                                </p>
+                              </div>
+
+                              {/* Summary - Neutral design with clickable filters */}
+                              <div className="bg-zinc-50 border border-zinc-200 rounded-lg p-3">
+                                <div className="flex items-center justify-between mb-2">
+                                  <p className="text-sm font-semibold text-zinc-900">
+                                    Issues
+                                  </p>
+                                  {fetchState.schemaAnalysis.filterBySeverity && (
+                                    <button
+                                      onClick={() => setFetchState(prev => ({
+                                        ...prev,
+                                        schemaAnalysis: prev.schemaAnalysis ? {
+                                          ...prev.schemaAnalysis,
+                                          filterBySeverity: null
+                                        } : undefined
+                                      }))}
+                                      className="text-[10px] text-zinc-500 hover:text-zinc-700 underline"
+                                    >
+                                      Clear filter
+                                    </button>
+                                  )}
+                                </div>
+                                <div className="flex flex-wrap gap-2">
+                                  {(fetchState.schemaAnalysis.result.summary.bySeverity.warning || 0) > 0 && (
+                                    <button
+                                      onClick={() => setFetchState(prev => ({
+                                        ...prev,
+                                        schemaAnalysis: prev.schemaAnalysis ? {
+                                          ...prev.schemaAnalysis,
+                                          filterBySeverity: prev.schemaAnalysis.filterBySeverity === "warning" ? null : "warning"
+                                        } : undefined
+                                      }))}
+                                      className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs transition-colors ${
+                                        fetchState.schemaAnalysis.filterBySeverity === "warning"
+                                          ? "bg-red-100 ring-1 ring-red-300"
+                                          : "bg-white hover:bg-zinc-50 border border-zinc-200"
+                                      }`}
+                                    >
+                                      <span className="font-medium text-red-700">{fetchState.schemaAnalysis.result.summary.bySeverity.warning} High Impact</span>
+                                    </button>
+                                  )}
+                                  {(fetchState.schemaAnalysis.result.summary.bySeverity.suggestion || 0) > 0 && (
+                                    <button
+                                      onClick={() => setFetchState(prev => ({
+                                        ...prev,
+                                        schemaAnalysis: prev.schemaAnalysis ? {
+                                          ...prev.schemaAnalysis,
+                                          filterBySeverity: prev.schemaAnalysis.filterBySeverity === "suggestion" ? null : "suggestion"
+                                        } : undefined
+                                      }))}
+                                      className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs transition-colors ${
+                                        fetchState.schemaAnalysis.filterBySeverity === "suggestion"
+                                          ? "bg-yellow-100 ring-1 ring-yellow-400"
+                                          : "bg-white hover:bg-zinc-50 border border-zinc-200"
+                                      }`}
+                                    >
+                                      <span className="font-medium text-yellow-700">{fetchState.schemaAnalysis.result.summary.bySeverity.suggestion} Medium Impact</span>
+                                    </button>
+                                  )}
+                                  {(fetchState.schemaAnalysis.result.summary.bySeverity.info || 0) > 0 && (
+                                    <button
+                                      onClick={() => setFetchState(prev => ({
+                                        ...prev,
+                                        schemaAnalysis: prev.schemaAnalysis ? {
+                                          ...prev.schemaAnalysis,
+                                          filterBySeverity: prev.schemaAnalysis.filterBySeverity === "info" ? null : "info"
+                                        } : undefined
+                                      }))}
+                                      className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs transition-colors ${
+                                        fetchState.schemaAnalysis.filterBySeverity === "info"
+                                          ? "bg-zinc-200 ring-1 ring-zinc-400"
+                                          : "bg-white hover:bg-zinc-50 border border-zinc-200"
+                                      }`}
+                                    >
+                                      <span className="font-medium text-zinc-700">{fetchState.schemaAnalysis.result.summary.bySeverity.info} Low Impact</span>
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+
+                              {/* Issue List - Filtered */}
+                              {fetchState.schemaAnalysis.result.issues
+                                .filter(issue => !fetchState.schemaAnalysis?.filterBySeverity || issue.severity === fetchState.schemaAnalysis.filterBySeverity)
+                                .map((issue) => (
+                                <IssueCard
+                                  key={issue.id}
+                                  issue={issue}
+                                  onRefactor={handleRefactorIssue}
+                                  isRefactoring={fetchState.schemaAnalysis?.refactoringIssueId === issue.id}
+                                />
+                              ))}
+                            </div>
+                          )}
+
+                          {/* Error State */}
+                          {fetchState.schemaAnalysis?.status === "error" && (
+                            <div className="p-3 bg-red-50 border border-red-200 rounded-lg">
+                              <p className="text-xs text-red-800">
+                                {fetchState.schemaAnalysis.error || "Failed to analyze schema"}
+                              </p>
+                              <button
+                                onClick={() => fetchState.data && handleAnalyzeSchema(fetchState.data)}
+                                className="mt-2 text-xs text-red-700 underline hover:text-red-900"
+                              >
+                                Retry analysis
+                              </button>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Re-analyze button at bottom */}
+                        {fetchState.schemaAnalysis?.status === "success" && fetchState.data && (
+                          <div className="pt-3 border-t border-zinc-200 mt-3">
+                            <button
+                              onClick={() => handleAnalyzeSchema(fetchState.data!)}
+                              className="w-full px-3 py-2 border border-zinc-200 text-zinc-600 text-xs font-medium rounded hover:bg-zinc-50 transition-colors"
+                            >
+                              Re-analyze Schema
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
@@ -3276,5 +3996,19 @@ export default function Home() {
 
       </main>
     </>
+  );
+}
+
+/**
+ * Home Component (Page Export)
+ *
+ * This wrapper component ensures the page works correctly with Next.js static generation.
+ * useSearchParams() requires a Suspense boundary to work during the build process.
+ */
+export default function Home() {
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-zinc-100 flex items-center justify-center">Loading...</div>}>
+      <HomeContent />
+    </Suspense>
   );
 }

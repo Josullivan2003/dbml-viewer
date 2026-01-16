@@ -1,8 +1,48 @@
+/**
+ * Table Finder API Endpoint
+ *
+ * PURPOSE:
+ * This endpoint helps users understand which tables in their database are
+ * involved in a specific feature or workflow. Users can ask questions like
+ * "What tables handle user authentication?" or "Which tables are used for
+ * the checkout process?" and get a visual grouping of relevant tables.
+ *
+ * WHAT IT DOES:
+ * 1. Receives a question about the database (e.g., "What handles payments?")
+ * 2. Sends the question to Claude AI along with a simplified view of the schema
+ * 3. Claude identifies which tables are relevant and explains each one's role
+ * 4. Returns a TableGroup definition that highlights these tables in the diagram
+ *
+ * WHY THIS MATTERS:
+ * Large databases can have dozens of tables, making it hard to understand
+ * how they fit together. This feature lets users ask questions in plain
+ * English and see which tables are relevant, with explanations of each table's
+ * role in the feature they're asking about.
+ *
+ * INPUT:
+ * - dbml: The database schema to analyze
+ * - question: Plain English question about which tables are involved in something
+ *
+ * OUTPUT:
+ * - updatedDbml: Schema with a TableGroup added to highlight relevant tables
+ * - matchedTables: List of table names that are relevant
+ * - tableExplanations: For each table, an explanation of its role
+ * - explanation: Overall summary of why these tables are grouped
+ */
+
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 
-// Extract just table names from DBML (without field definitions) for faster processing
-// This reduces token count while keeping schema context
+/**
+ * Simplifies DBML for the AI Prompt
+ *
+ * Full DBML schemas can be very large with many field definitions.
+ * For table identification, Claude only needs to see the table names
+ * and their descriptions (Note: lines).
+ *
+ * This function strips out field definitions to reduce token usage
+ * while keeping enough context for accurate table identification.
+ */
 function simplifyDbmlForPrompt(dbml: string): string {
   const lines = dbml.split('\n');
   const simplified: string[] = [];
@@ -32,7 +72,7 @@ function simplifyDbmlForPrompt(dbml: string): string {
 
 // Builds the system prompt for table identification and grouping
 // This prompt tells Claude to analyze the user's question, identify relevant tables,
-// and add a TableGroup definition to the DBML
+// and add a TableGroup definition to the DBML with per-table explanations
 function buildSystemPrompt(dbml: string): string {
   const simplifiedDbml = simplifyDbmlForPrompt(dbml);
 
@@ -45,28 +85,30 @@ YOUR TASK:
 1. The user will ask a question about which tables are involved in a specific feature or workflow
 2. Identify ALL tables from the schema that are relevant to answering their question
 3. Generate a TableGroup definition that groups these related tables together
+4. For each table, provide a brief inline comment explaining why it's included in the group
 
 IMPORTANT RULES:
 1. Return ONLY the TableGroup block - no markdown code blocks, no explanations, no extra text
 2. Do NOT add any new tables or fields
 3. Ensure ALL braces are balanced
-4. The TableGroup must include a Note explaining why these tables are grouped together
+4. Each table MUST have an inline comment (using //) explaining its role in the feature/workflow
+5. The TableGroup must include a Note explaining why these tables are grouped together
 
 TABLEGROUP SYNTAX:
 TableGroup "descriptive_name" [color: #FFBD94] {
-  table1
-  table2
-  table3
-  Note: '''Brief explanation of the feature or workflow this group represents'''
+  table1 // Brief explanation of table1's role
+  table2 // Brief explanation of table2's role
+  table3 // Brief explanation of table3's role
+  Note: '''Overall explanation of the feature or workflow this group represents'''
 }
 
 EXAMPLE:
 If user asks "What tables handle user authentication?", and you identify user, session, and login_attempt tables:
 TableGroup "user_authentication" [color: #FFBD94] {
-  user
-  session
-  login_attempt
-  Note: '''Tables involved in user authentication, including user accounts, active sessions, and login tracking'''
+  user // Contains user account information and login credentials
+  session // Tracks active user sessions and maintains login state
+  login_attempt // Logs authentication attempts for security and fraud detection
+  Note: '''Tables involved in user authentication workflow'''
 }
 
 Return ONLY the TableGroup block shown above. Nothing else.`;
@@ -119,10 +161,17 @@ function extractTableGroupInfo(
   const groupContent = match[2];
 
   // Extract table names from group content (lines before Note:)
+  // Each line may have an inline comment: tablename // explanation
+  // We need to extract just the table name part before any comment
   const tablesSection = groupContent.split("Note:")[0];
   const tables = tablesSection
     .split("\n")
-    .map((line) => line.trim())
+    .map((line) => {
+      const trimmed = line.trim();
+      // If line has inline comment (//), extract just the part before it
+      const beforeComment = trimmed.split("//")[0].trim();
+      return beforeComment;
+    })
     .filter((line) => line && !line.startsWith("//"));
 
   // Extract the explanation from Note:
@@ -130,6 +179,44 @@ function extractTableGroupInfo(
   const explanation = noteMatch ? noteMatch[1].trim() : "";
 
   return { groupName, tables, explanation };
+}
+
+// Extracts per-table explanations from inline comments in the TableGroup
+// Parses comments in format: tablename // explanation
+function extractTableExplanations(
+  dbml: string
+): { table: string; explanation: string }[] {
+  const tableGroupRegex =
+    /TableGroup\s+"[^"]+"\s*(?:\[color:\s*[#\w]+\])?\s*\{([^}]+)\}/;
+  const match = dbml.match(tableGroupRegex);
+
+  if (!match) {
+    return [];
+  }
+
+  const groupContent = match[1];
+  const tableExplanations: { table: string; explanation: string }[] = [];
+
+  // Process each line in the TableGroup
+  const lines = groupContent.split("\n");
+  for (const line of lines) {
+    // Skip Note: lines and empty lines
+    if (line.includes("Note:") || !line.trim()) {
+      continue;
+    }
+
+    // Match pattern: tablename // explanation
+    // This regex captures the table name and everything after //
+    const tableMatch = line.match(/^\s*(\w+)\s*\/\/\s*(.+)$/);
+    if (tableMatch) {
+      tableExplanations.push({
+        table: tableMatch[1].trim(),
+        explanation: tableMatch[2].trim(),
+      });
+    }
+  }
+
+  return tableExplanations;
 }
 
 export async function POST(request: NextRequest) {
@@ -232,27 +319,83 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Validate that all tables in the group actually exist in the schema
+    // Filter out any tables that don't actually exist in the schema
+    // The AI sometimes hallucinates table names that aren't in the original DBML
     const schemaTableNames = extractTableNames(dbml);
-    const invalidTables = tableGroupInfo.tables.filter(
-      (table) => !schemaTableNames.includes(table)
+    const originalTableCount = tableGroupInfo.tables.length;
+    const validTables = tableGroupInfo.tables.filter((table) =>
+      schemaTableNames.includes(table)
     );
 
-    if (invalidTables.length > 0) {
+    // If no valid tables remain after filtering, return an error
+    if (validTables.length === 0) {
       return NextResponse.json(
         {
-          error: `Table group references non-existent tables: ${invalidTables.join(", ")}`,
+          error:
+            "Could not find any matching tables for your question. Please try rephrasing.",
         },
         { status: 400 }
       );
     }
 
+    // Check if we need to rebuild the TableGroup (some tables were filtered out)
+    const needsRebuild = validTables.length < originalTableCount;
+    let finalDbml = updatedDbml;
+
+    if (needsRebuild) {
+      // Get only the valid table explanations from the original AI response
+      const validTableExplanationsMap = new Map<string, string>();
+      const allExplanations = extractTableExplanations(updatedDbml);
+      for (const exp of allExplanations) {
+        if (validTables.includes(exp.table)) {
+          validTableExplanationsMap.set(exp.table, exp.explanation);
+        }
+      }
+
+      // Rebuild the TableGroup with only valid tables
+      const rebuiltTableLines = validTables
+        .map((table) => {
+          const explanation =
+            validTableExplanationsMap.get(table) ||
+            `Part of ${tableGroupInfo.groupName.replace(/_/g, " ")}`;
+          return `  ${table} // ${explanation}`;
+        })
+        .join("\n");
+
+      const rebuiltTableGroup = `TableGroup "${tableGroupInfo.groupName}" [color: #FFBD94] {
+${rebuiltTableLines}
+  Note: '''${tableGroupInfo.explanation}'''
+}`;
+
+      finalDbml = dbml.trimEnd() + "\n\n" + rebuiltTableGroup;
+    }
+
+    // Update tableGroupInfo with only valid tables
+    tableGroupInfo.tables = validTables;
+
+    // Extract per-table explanations from inline comments (use finalDbml for accurate data)
+    let tableExplanations = extractTableExplanations(finalDbml);
+
+    // If no explanations were found, generate fallback generic explanations from table names
+    if (tableExplanations.length === 0 && validTables.length > 0) {
+      tableExplanations = validTables.map((table) => ({
+        table,
+        explanation: `Part of ${tableGroupInfo.groupName.replace(/_/g, " ")}`,
+      }));
+    }
+
+    // Filter explanations to only include valid tables
+    tableExplanations = tableExplanations.filter((exp) =>
+      validTables.includes(exp.table)
+    );
+
     // Return success response with updated DBML and group details
     return NextResponse.json({
-      updatedDbml,
+      updatedDbml: finalDbml,
       tableGroupName: tableGroupInfo.groupName,
-      matchedTables: tableGroupInfo.tables,
+      matchedTables: validTables,
       explanation: tableGroupInfo.explanation,
+      tableExplanations,
     });
   } catch (error) {
     console.error("Error in table-finder route:", error);

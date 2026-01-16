@@ -1,42 +1,91 @@
+/**
+ * Feature Planning API Endpoint
+ *
+ * PURPOSE:
+ * This endpoint helps users plan new features for their Bubble.io app by automatically
+ * generating the database tables they'll need. Users describe what feature they want
+ * (like "add a chat system" or "implement user reviews") and Claude AI designs the
+ * database schema to support that feature.
+ *
+ * WHAT IT DOES:
+ * 1. Receives a description of the feature the user wants to build
+ * 2. Analyzes the existing database schema to understand the current structure
+ * 3. Uses Claude AI to design new tables and fields needed for the feature
+ * 4. Returns the proposed schema additions that can be merged with the existing schema
+ *
+ * WHY THIS MATTERS:
+ * Designing database tables is one of the hardest parts of building an app. This feature
+ * removes that barrier by letting users describe what they want in plain English, and
+ * getting back a professional database design that follows best practices.
+ *
+ * INPUT:
+ * - currentDbml: The user's existing database schema
+ * - featureDescription: Plain English description of the feature to build
+ *
+ * OUTPUT:
+ * - generatedDbml: New tables and fields to add for this feature
+ * - generatedDbmlWithBubbleTypes: Same schema with Bubble-compatible types
+ * - fieldTypes: Type information for displaying in the UI
+ * - tableDescriptions: Descriptions of what each new table is for
+ * - featureTitle: A short 2-4 word title summarizing the feature
+ */
+
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 
+/**
+ * Builds the System Prompt for Feature Planning
+ *
+ * Creates detailed instructions for Claude on how to design database tables
+ * for a new feature. The prompt includes:
+ * - The existing schema (so Claude knows what tables already exist)
+ * - Rules about Bubble-compatible types
+ * - Examples of correct table and field definitions
+ * - Instructions for proper relationships and foreign keys
+ */
 function buildSystemPrompt(currentDbml: string): string {
-  return `Design database schema extensions for Bubble.io using DBML. Extend the existing schema with new tables/fields for the requested feature.
+  return `Design database schema extensions for Bubble.io using DBML. Create new tables and relationships for the requested feature.
+
+IMPORTANT: Return ONLY new tables/fields for this feature - do NOT include existing tables from the current schema in your response.
+The system will automatically merge your new tables with the existing schema.
 
 BUBBLE TYPES ONLY: text, number, Y_N (yes/no), date (datetime), unique (primary keys), table names (foreign keys)
-Examples: id (unique), user_id (user), post_id (post), chat_conversation_id (chat_conversation)
-- DO NOT use: int, decimal, boolean, datetime, timestamp, varchar
+Examples: _id (unique), user_id (user), post_id (post), chat_conversation_id (chat_conversation)
+- DO NOT use: int, decimal, boolean, datetime, timestamp, varchar, id (use _id instead)
+
+REFERENCE SCHEMA (do not include these tables in response):
+${currentDbml}
 
 RULES:
 1. Return ONLY valid DBML - no markdown code blocks
 2. Ensure ALL braces are balanced: each Table { must have a closing }
-3. Include ALL existing tables exactly as-is
-4. Add only essential new tables/fields for the feature
+3. Return ONLY NEW tables/fields for this feature - do NOT include existing tables above
+4. Create essential new tables/fields for the feature
 5. Use snake_case names matching existing patterns - all lowercase with underscores
-6. Primary key fields (named "id") use "unique" type
+6. Primary key fields MUST be named "_id" (not "id") with type "unique"
+   - Correct: _id unique
+   - Incorrect: id unique
 7. Foreign key fields MUST follow this pattern: {table_name}_id {referenced_table_name}
    - Naming: MUST be exactly {table_name}_id with NO prefixes or suffixes
    - Type: MUST be the referenced table name (NOT "unique")
    - Examples: user_id user, post_id post, chat_conversation_id chat_conversation
    - WRONG: sender_user_id unique, user_ID unique, userId unique (never use these)
-8. Relationships: > (many-to-one), < (one-to-many), - (one-to-one)
-9. Add table-level Note: "Simple one-sentence explanation"
-10. Add field-level Notes: "Simple one-line explanation"
-11. OPTIONAL - TABLEGROUP: At the END of the DBML, create a single TableGroup with color #FFBD94 containing:
-    - ALL new tables created for this feature
-    - ALL existing tables that are modified (have new fields added)
-    - Do NOT include existing tables that are only referenced but not modified
-    - CRITICAL SYNTAX: TableGroup "feature_name" [color: #FFBD94] { tables... Note: '''description''' }
+8. Relationships MUST reference "_id" field (NOT "id"):
+   - Correct: Ref: review.business_id > business._id
+   - Incorrect: Ref: review.business_id > business.id
+9. Add table-level Note: "Simple one-sentence explanation" to each new table
+10. Add field-level Notes: "Simple one-line explanation" to each field
+11. OPTIONAL - TABLEGROUP: At the END of the DBML, create a single TableGroup with color #FFBD94 containing all new tables
+    - CRITICAL SYNTAX: TableGroup "feature_name" [color: #FFBD94] { table_name... Note: '''description''' }
     - TableGroup name MUST be in quotes
     - Color MUST use syntax: [color: #FFBD94]
-    - Include a Note section with triple quotes for multi-line description
-    - Only add TableGroup if there are new or modified tables
+    - Include a Note section with triple quotes for multi-line description of the feature
+    - Only add TableGroup if there are new tables
 
 EXAMPLES:
 Table "messages" {
   Note: "Stores messages between users."
-  id unique [primary key, Note: "Message ID"]
+  _id unique [primary key, Note: "Message ID"]
   user_id user [Note: "Sender"]
   content text [Note: "Message text"]
   created_at date [Note: "When sent"]
@@ -44,7 +93,7 @@ Table "messages" {
 
 Table "comments" {
   Note: "Stores comments on posts."
-  id unique [primary key, Note: "Comment ID"]
+  _id unique [primary key, Note: "Comment ID"]
   post_id post [Note: "Parent post"]
   user_id user [Note: "Comment author"]
   content text [Note: "Comment text"]
@@ -52,7 +101,7 @@ Table "comments" {
 
 Table "payroll_run" {
   Note: "Represents a weekly payroll processing batch."
-  id unique [primary key, Note: "Payroll run ID"]
+  _id unique [primary key, Note: "Payroll run ID"]
   week_start_date date [Note: "Start date of payroll"]
   processed_by_user_id user [Note: "Admin who processed - foreign key uses table name"]
   status text [Note: "Payroll status"]
@@ -128,8 +177,6 @@ function convertDbmlTypeToBubbleType(dbmlType: string): string {
 
     // Unique/ID type
     'unique': 'unique',
-
-    // Default for unrecognized types
   };
 
   const normalized = dbmlType.toLowerCase().trim();
@@ -146,12 +193,27 @@ function convertDbmlTypeToBubbleType(dbmlType: string): string {
     }
   }
 
-  // Default to text for unrecognized types
-  return 'text';
+  // Return the original type if not recognized
+  return dbmlType;
 }
 
 function extractFieldTypesFromDbml(dbml: string): { [tableName: string]: { [fieldName: string]: string } } {
   const fieldTypes: { [tableName: string]: { [fieldName: string]: string } } = {};
+
+  // Parse inline Ref relationships to build a foreign key map
+  // Pattern: field_name text [ref: > table._id]
+  const inlineRefMap: { [tableAndField: string]: string } = {};
+  const inlineRefRegex = /(\w+)\s+\w+\s+\[ref:\s*>\s*(\w+)\.(\w+)\]/g;
+  let refMatch;
+
+  // We'll need to track which table each field belongs to, so we parse refs after extracting tables
+  const refInfo: Array<{ fieldName: string; referencedTable: string }> = [];
+
+  while ((refMatch = inlineRefRegex.exec(dbml)) !== null) {
+    const fieldName = refMatch[1];
+    const referencedTable = refMatch[2];
+    refInfo.push({ fieldName, referencedTable });
+  }
 
   // Match table definitions
   const tableRegex = /Table\s+(?:"([^"]+)"|(\w+))\s*\{([^}]+)\}/g;
@@ -188,6 +250,12 @@ function extractFieldTypesFromDbml(dbml: string): { [tableName: string]: { [fiel
       } else if (fieldName.endsWith('_id')) {
         // Extract table name from field name (user_id -> user)
         bubbleType = fieldName.slice(0, -3);
+      } else {
+        // Check if this field has an inline Ref relationship
+        const refInfo_ = refInfo.find(r => r.fieldName === fieldName);
+        if (refInfo_) {
+          bubbleType = refInfo_.referencedTable;
+        }
       }
 
       fieldTypes[tableName][fieldName] = bubbleType;
@@ -200,6 +268,11 @@ function extractFieldTypesFromDbml(dbml: string): { [tableName: string]: { [fiel
 function convertDbmlToBubbleTypes(dbml: string): string {
   // Replace DBML types with Bubble types in the entire DBML
   let converted = dbml;
+
+  // Handle inline Ref relationships: field_name text [ref: > table._id]
+  // Replace the field's type with the referenced table name
+  // Pattern: any word characters (field), any type, [ref: > table._id] -> replace type with table name
+  converted = converted.replace(/(\w+)\s+\w+\s+(\[ref:\s*>\s*(\w+)\.)/g, '$1 $3 $2');
 
   // Replace type declarations: field_name oldType -> field_name newType
   // Do numeric types first (more specific)
